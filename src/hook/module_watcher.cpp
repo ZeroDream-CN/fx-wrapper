@@ -71,6 +71,9 @@ void InvokeModuleLoadedOnce() {
         return;
     }
 
+    // Exports may not be bound immediately after the module load notification.
+    Sleep(200);
+
     if (g_onModuleLoaded) {
         g_onModuleLoaded();
     }

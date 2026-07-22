@@ -10,7 +10,7 @@
 namespace {
 
 constexpr char kLogChannel[] = "fx-wrapper";
-constexpr char kHooksInstalledMessage[] = "FXServer Wrapper by Akkariin\nAll hooks installed, sandbox features bypassed\n";
+constexpr char kHooksInstalledMessage[] = "^1FXServer ^0Wrapper by ^3Akkariin^0\n^2Hook 安装成功，沙盒功能已绕过^0\n";
 
 struct FmtPrintfArgs {
     alignas(16) unsigned char data[64]{};
@@ -31,31 +31,35 @@ constexpr uint8_t kAllStages =
     StageBit(HookInstallStage::LuaOs);
 
 PrintfvFn ResolvePrintfv() {
-    static PrintfvFn printfv = []() -> PrintfvFn {
-        HMODULE coreRt = GetModuleHandleW(L"CoreRT.dll");
-        if (coreRt == nullptr) {
-            return nullptr;
-        }
+    static PrintfvFn cached = nullptr;
+    if (cached != nullptr) {
+        return cached;
+    }
 
-        return reinterpret_cast<PrintfvFn>(GetProcAddress(coreRt, "Printfv"));
-    }();
+    HMODULE coreRt = GetModuleHandleW(L"CoreRT.dll");
+    if (coreRt == nullptr) {
+        return nullptr;
+    }
 
-    return printfv;
+    cached = reinterpret_cast<PrintfvFn>(GetProcAddress(coreRt, "Printfv"));
+    return cached;
 }
 
 ConHostPrintFn ResolveConHostPrint() {
-    static ConHostPrintFn print = []() -> ConHostPrintFn {
-        HMODULE conhost = GetModuleHandleW(L"conhost-server.dll");
-        if (conhost == nullptr) {
-            return nullptr;
-        }
+    static ConHostPrintFn cached = nullptr;
+    if (cached != nullptr) {
+        return cached;
+    }
 
-        return reinterpret_cast<ConHostPrintFn>(GetProcAddress(
-            conhost,
-            "?Print@ConHost@@YAXAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@0@Z"));
-    }();
+    HMODULE conhost = GetModuleHandleW(L"conhost-server.dll");
+    if (conhost == nullptr) {
+        return nullptr;
+    }
 
-    return print;
+    cached = reinterpret_cast<ConHostPrintFn>(GetProcAddress(
+        conhost,
+        "?Print@ConHost@@YAXAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@0@Z"));
+    return cached;
 }
 
 void WriteFallbackLog(const char* message) {
@@ -63,11 +67,33 @@ void WriteFallbackLog(const char* message) {
     OutputDebugStringA(message);
 }
 
+std::string EscapePrintfLiteral(const char* message) {
+    std::string escaped;
+    if (message == nullptr) {
+        return escaped;
+    }
+
+    escaped.reserve(std::strlen(message) + 8);
+    for (const char* cursor = message; *cursor != '\0'; ++cursor) {
+        if (*cursor == '%') {
+            escaped.append("%%");
+        } else {
+            escaped.push_back(*cursor);
+        }
+    }
+
+    return escaped;
+}
+
 void WriteCoreLog(const char* channel, const char* message) {
     PrintfvFn printfv = ResolvePrintfv();
     if (printfv != nullptr) {
+        const std::string escaped = EscapePrintfLiteral(message);
         FmtPrintfArgs args{};
-        printfv(std::string(channel), std::string_view(message, std::strlen(message)), args);
+        printfv(
+            std::string(channel),
+            std::string_view(escaped.data(), escaped.size()),
+            args);
         return;
     }
 
@@ -98,4 +124,28 @@ void TryLogHooksInstalled() {
 void NotifyHookStageInstalled(HookInstallStage stage) {
     g_installedStages.fetch_or(StageBit(stage), std::memory_order_release);
     TryLogHooksInstalled();
+}
+
+void LogFxMessage(const char* message) {
+    if (message == nullptr || message[0] == '\0') {
+        return;
+    }
+
+    WriteCoreLog(kLogChannel, message);
+}
+
+bool WaitForLogReady(std::uint32_t maxWaitMs) {
+    constexpr DWORD kPollIntervalMs = 50;
+    DWORD waited = 0;
+
+    while (waited < maxWaitMs) {
+        if (ResolvePrintfv() != nullptr) {
+            return true;
+        }
+
+        Sleep(kPollIntervalMs);
+        waited += kPollIntervalMs;
+    }
+
+    return ResolvePrintfv() != nullptr;
 }

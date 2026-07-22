@@ -32,7 +32,7 @@ target_compile_definitions(fx-wrapper PRIVATE
 target_link_libraries(fx-wrapper PRIVATE kernel32)
 
 if(MSVC)
-    target_compile_options(fx-wrapper PRIVATE /W4 /permissive-)
+    target_compile_options(fx-wrapper PRIVATE /W4 /permissive- /utf-8)
 endif()
 
 set_target_properties(fx-wrapper PROPERTIES
@@ -50,6 +50,7 @@ add_library(fx-hook SHARED
     src/hook/lua_os_patch.cpp
     src/hook/module_watcher.cpp
     src/hook/hooks.cpp
+    src/hook/update_check.cpp
 )
 
 target_include_directories(fx-hook PRIVATE src src/hook)
@@ -60,16 +61,18 @@ target_compile_definitions(fx-hook PRIVATE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
     FX_HOOK_EXPORTS
+    FX_WRAPPER_VERSION="${PROJECT_VERSION}"
 )
 
 target_link_libraries(fx-hook PRIVATE
     minhook
     kernel32
     ntdll
+    winhttp
 )
 
 if(MSVC)
-    target_compile_options(fx-hook PRIVATE /W4 /permissive-)
+    target_compile_options(fx-hook PRIVATE /W4 /permissive- /utf-8)
 endif()
 
 set_target_properties(fx-hook PROPERTIES

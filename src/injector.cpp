@@ -1,5 +1,54 @@
 #include "injector.h"
 
+#include <filesystem>
+#include <tlhelp32.h>
+
+namespace {
+
+bool IsRemoteModuleLoaded(DWORD processId, const wchar_t* moduleName) {
+    if (processId == 0 || moduleName == nullptr || moduleName[0] == L'\0') {
+        return false;
+    }
+
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, processId);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    MODULEENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+
+    bool found = false;
+    if (Module32FirstW(snapshot, &entry)) {
+        do {
+            if (_wcsicmp(entry.szModule, moduleName) == 0) {
+                found = true;
+                break;
+            }
+        } while (Module32NextW(snapshot, &entry));
+    }
+
+    CloseHandle(snapshot);
+    return found;
+}
+
+bool WaitForRemoteModuleLoaded(HANDLE processHandle, const wchar_t* moduleName, DWORD timeoutMs) {
+    const DWORD processId = GetProcessId(processHandle);
+    const ULONGLONG startTick = GetTickCount64();
+
+    while (GetTickCount64() - startTick < timeoutMs) {
+        if (IsRemoteModuleLoaded(processId, moduleName)) {
+            return true;
+        }
+
+        Sleep(50);
+    }
+
+    return IsRemoteModuleLoaded(processId, moduleName);
+}
+
+}  // namespace
+
 bool InjectDll(HANDLE processHandle, HANDLE mainThreadHandle, const std::wstring& dllPath, std::wstring& outError) {
     if (processHandle == nullptr || processHandle == INVALID_HANDLE_VALUE) {
         outError = L"Invalid process handle for DLL injection.";
@@ -53,4 +102,14 @@ bool InjectDll(HANDLE processHandle, HANDLE mainThreadHandle, const std::wstring
     }
 
     return true;
+}
+
+bool WaitForInjectedModule(HANDLE processHandle, const std::wstring& dllPath, DWORD timeoutMs, std::wstring& outError) {
+    const std::wstring moduleName = std::filesystem::path(dllPath).filename().wstring();
+    if (WaitForRemoteModuleLoaded(processHandle, moduleName.c_str(), timeoutMs)) {
+        return true;
+    }
+
+    outError = L"Timed out waiting for injected DLL to load: " + moduleName;
+    return false;
 }

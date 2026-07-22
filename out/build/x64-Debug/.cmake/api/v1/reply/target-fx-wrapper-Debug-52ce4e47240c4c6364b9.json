@@ -80,6 +80,10 @@
 				{
 					"backtrace" : 3,
 					"fragment" : "/permissive-"
+				},
+				{
+					"backtrace" : 3,
+					"fragment" : "/utf-8"
 				}
 			],
 			"defines" : 

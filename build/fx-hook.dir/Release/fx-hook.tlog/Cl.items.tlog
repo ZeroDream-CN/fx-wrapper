@@ -5,3 +5,4 @@ C:\PrivateProject\fx-wrapper\src\hook\citizen_lua_api.cpp;C:\PrivateProject\fx-w
 C:\PrivateProject\fx-wrapper\src\hook\lua_os_patch.cpp;C:\PrivateProject\fx-wrapper\build\fx-hook.dir\Release\lua_os_patch.obj
 C:\PrivateProject\fx-wrapper\src\hook\module_watcher.cpp;C:\PrivateProject\fx-wrapper\build\fx-hook.dir\Release\module_watcher.obj
 C:\PrivateProject\fx-wrapper\src\hook\hooks.cpp;C:\PrivateProject\fx-wrapper\build\fx-hook.dir\Release\hooks.obj
+C:\PrivateProject\fx-wrapper\src\hook\update_check.cpp;C:\PrivateProject\fx-wrapper\build\fx-hook.dir\Release\update_check.obj

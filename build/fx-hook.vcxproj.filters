@@ -22,6 +22,9 @@
     <ClCompile Include="C:\PrivateProject\fx-wrapper\src\hook\hooks.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="C:\PrivateProject\fx-wrapper\src\hook\update_check.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="C:\PrivateProject\fx-wrapper\CMakeLists.txt" />

@@ -59,5 +59,11 @@ int wmain(int argc, wchar_t* argv[]) {
         return 3;
     }
 
+    if (!WaitForInjectedModule(launchedProcess.processInfo.hProcess, hookDllPath, 5000, error)) {
+        PrintError(error);
+        TerminateLaunchedProcess(launchedProcess);
+        return 4;
+    }
+
     return static_cast<int>(WaitForProcessExit(launchedProcess));
 }

@@ -28,6 +28,13 @@ WorkerAllowSpawnFn g_originalWorkerAllowSpawn = nullptr;
 
 std::atomic<bool> g_hooksInstalled{false};
 std::atomic<bool> g_hookInstallScheduled{false};
+std::atomic<bool> g_childHookInstalled{false};
+std::atomic<bool> g_filesystemHookInstalled{false};
+std::atomic<bool> g_workerHookInstalled{false};
+
+constexpr int kHookInstallAttempts = 600;
+constexpr DWORD kHookInstallInitialDelayMs = 500;
+constexpr DWORD kHookInstallRetryDelayMs = 100;
 
 bool __cdecl Hook_ChildProcessAllowSpawn(void* /*resource*/) {
     return true;
@@ -59,25 +66,51 @@ bool InstallScriptingHooksOnce() {
     void* filesystemTarget = reinterpret_cast<void*>(GetProcAddress(module, kFilesystemAllowWriteSymbol));
     void* workerTarget = reinterpret_cast<void*>(GetProcAddress(module, kWorkerAllowSpawnSymbol));
 
-    const bool childOk = CreateAndEnableHook(
-        childProcessTarget,
-        reinterpret_cast<void*>(&Hook_ChildProcessAllowSpawn),
-        reinterpret_cast<void**>(&g_originalChildProcessAllowSpawn),
-        kChildProcessAllowSpawnSymbol);
+    if (childProcessTarget == nullptr || filesystemTarget == nullptr || workerTarget == nullptr) {
+        return false;
+    }
 
-    const bool filesystemOk = CreateAndEnableHook(
-        filesystemTarget,
-        reinterpret_cast<void*>(&Hook_FilesystemAllowWrite),
-        reinterpret_cast<void**>(&g_originalFilesystemAllowWrite),
-        kFilesystemAllowWriteSymbol);
+    if (!EnsureMinHookInitialized()) {
+        return false;
+    }
 
-    const bool workerOk = CreateAndEnableHook(
-        workerTarget,
-        reinterpret_cast<void*>(&Hook_WorkerAllowSpawn),
-        reinterpret_cast<void**>(&g_originalWorkerAllowSpawn),
-        kWorkerAllowSpawnSymbol);
+    if (!g_childHookInstalled.load()) {
+        if (!CreateAndEnableHook(
+                childProcessTarget,
+                reinterpret_cast<void*>(&Hook_ChildProcessAllowSpawn),
+                reinterpret_cast<void**>(&g_originalChildProcessAllowSpawn),
+                kChildProcessAllowSpawnSymbol)) {
+            return false;
+        }
 
-    if (childOk && filesystemOk && workerOk) {
+        g_childHookInstalled.store(true);
+    }
+
+    if (!g_filesystemHookInstalled.load()) {
+        if (!CreateAndEnableHook(
+                filesystemTarget,
+                reinterpret_cast<void*>(&Hook_FilesystemAllowWrite),
+                reinterpret_cast<void**>(&g_originalFilesystemAllowWrite),
+                kFilesystemAllowWriteSymbol)) {
+            return false;
+        }
+
+        g_filesystemHookInstalled.store(true);
+    }
+
+    if (!g_workerHookInstalled.load()) {
+        if (!CreateAndEnableHook(
+                workerTarget,
+                reinterpret_cast<void*>(&Hook_WorkerAllowSpawn),
+                reinterpret_cast<void**>(&g_originalWorkerAllowSpawn),
+                kWorkerAllowSpawnSymbol)) {
+            return false;
+        }
+
+        g_workerHookInstalled.store(true);
+    }
+
+    if (g_childHookInstalled.load() && g_filesystemHookInstalled.load() && g_workerHookInstalled.load()) {
         g_hooksInstalled.store(true);
         OutputDebugStringW(L"[fx-hook] All scripting hooks installed\n");
         NotifyHookStageInstalled(HookInstallStage::ScriptingCore);
@@ -89,12 +122,14 @@ bool InstallScriptingHooksOnce() {
 }
 
 void HookInstallWorker() {
-    for (int attempt = 0; attempt < 100; ++attempt) {
+    Sleep(kHookInstallInitialDelayMs);
+
+    for (int attempt = 0; attempt < kHookInstallAttempts; ++attempt) {
         if (InstallScriptingHooksOnce()) {
             return;
         }
 
-        Sleep(100);
+        Sleep(kHookInstallRetryDelayMs);
     }
 
     OutputDebugStringW(L"[fx-hook] Timed out installing scripting hooks\n");

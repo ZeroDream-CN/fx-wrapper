@@ -27,8 +27,15 @@ LuaCFunction g_originalLuaOsRename = nullptr;
 CitizenLuaApi g_luaApi{};
 std::atomic<bool> g_luaOsHookInstalled{false};
 std::atomic<bool> g_luaOsHookScheduled{false};
+std::atomic<bool> g_luaExecuteHookInstalled{false};
+std::atomic<bool> g_luaRemoveHookInstalled{false};
+std::atomic<bool> g_luaRenameHookInstalled{false};
 std::atomic<bool> g_loggedLocateFailure{false};
 std::atomic<bool> g_loggedResolveFailure{false};
+
+constexpr int kLuaHookInstallAttempts = 600;
+constexpr DWORD kLuaHookInstallInitialDelayMs = 500;
+constexpr DWORD kLuaHookInstallRetryDelayMs = 100;
 
 bool UsesVfsPath(const char* path) {
     return path != nullptr && path[0] == '@';
@@ -170,28 +177,40 @@ bool InstallLuaOsHooksOnce() {
         return false;
     }
 
-    if (!CreateAndEnableHook(
-            sandboxExecute,
-            reinterpret_cast<void*>(&RealLuaOsExecute),
-            reinterpret_cast<void**>(&g_originalLuaOsExecute),
-            kExecuteSymbolName)) {
-        return false;
+    if (!g_luaExecuteHookInstalled.load()) {
+        if (!CreateAndEnableHook(
+                sandboxExecute,
+                reinterpret_cast<void*>(&RealLuaOsExecute),
+                reinterpret_cast<void**>(&g_originalLuaOsExecute),
+                kExecuteSymbolName)) {
+            return false;
+        }
+
+        g_luaExecuteHookInstalled.store(true);
     }
 
-    if (!CreateAndEnableHook(
-            sandboxRemove,
-            reinterpret_cast<void*>(&RealLuaOsRemove),
-            reinterpret_cast<void**>(&g_originalLuaOsRemove),
-            kRemoveSymbolName)) {
-        return false;
+    if (!g_luaRemoveHookInstalled.load()) {
+        if (!CreateAndEnableHook(
+                sandboxRemove,
+                reinterpret_cast<void*>(&RealLuaOsRemove),
+                reinterpret_cast<void**>(&g_originalLuaOsRemove),
+                kRemoveSymbolName)) {
+            return false;
+        }
+
+        g_luaRemoveHookInstalled.store(true);
     }
 
-    if (!CreateAndEnableHook(
-            sandboxRename,
-            reinterpret_cast<void*>(&RealLuaOsRename),
-            reinterpret_cast<void**>(&g_originalLuaOsRename),
-            kRenameSymbolName)) {
-        return false;
+    if (!g_luaRenameHookInstalled.load()) {
+        if (!CreateAndEnableHook(
+                sandboxRename,
+                reinterpret_cast<void*>(&RealLuaOsRename),
+                reinterpret_cast<void**>(&g_originalLuaOsRename),
+                kRenameSymbolName)) {
+            return false;
+        }
+
+        g_luaRenameHookInstalled.store(true);
     }
 
     g_luaOsHookInstalled.store(true);
@@ -203,12 +222,14 @@ bool InstallLuaOsHooksOnce() {
 }
 
 void LuaOsHookWorker() {
-    for (int attempt = 0; attempt < 100; ++attempt) {
+    Sleep(kLuaHookInstallInitialDelayMs);
+
+    for (int attempt = 0; attempt < kLuaHookInstallAttempts; ++attempt) {
         if (InstallLuaOsHooksOnce()) {
             return;
         }
 
-        Sleep(100);
+        Sleep(kLuaHookInstallRetryDelayMs);
     }
 
     OutputDebugStringW(L"[fx-hook] Timed out installing Lua OS hooks\n");

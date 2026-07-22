@@ -96,14 +96,14 @@
 				{
 					"directoryIndex" : 0,
 					"id" : "fx-hook::@6890427a1f51a3e7e1df",
-					"jsonFile" : "target-fx-hook-Debug-012264bd43604f156ae5.json",
+					"jsonFile" : "target-fx-hook-Debug-a822819cffa1ab192766.json",
 					"name" : "fx-hook",
 					"projectIndex" : 0
 				},
 				{
 					"directoryIndex" : 0,
 					"id" : "fx-wrapper::@6890427a1f51a3e7e1df",
-					"jsonFile" : "target-fx-wrapper-Debug-86ca3dcfde997735ccff.json",
+					"jsonFile" : "target-fx-wrapper-Debug-52ce4e47240c4c6364b9.json",
 					"name" : "fx-wrapper",
 					"projectIndex" : 0
 				},

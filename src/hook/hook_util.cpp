@@ -4,6 +4,7 @@
 #include <cwchar>
 #include <string>
 #include <string_view>
+#include <tlhelp32.h>
 
 namespace {
 
@@ -44,6 +45,48 @@ std::wstring GetBaseName(const wchar_t* path) {
     }
 
     return normalized;
+}
+
+bool IsRemoteModuleLoaded(DWORD processId, const wchar_t* moduleName) {
+    if (processId == 0 || moduleName == nullptr || moduleName[0] == L'\0') {
+        return false;
+    }
+
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, processId);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    MODULEENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+
+    bool found = false;
+    if (Module32FirstW(snapshot, &entry)) {
+        do {
+            if (_wcsicmp(entry.szModule, moduleName) == 0) {
+                found = true;
+                break;
+            }
+        } while (Module32NextW(snapshot, &entry));
+    }
+
+    CloseHandle(snapshot);
+    return found;
+}
+
+bool WaitForRemoteModuleLoaded(HANDLE processHandle, const wchar_t* moduleName, DWORD timeoutMs) {
+    const DWORD processId = GetProcessId(processHandle);
+    const ULONGLONG startTick = GetTickCount64();
+
+    while (GetTickCount64() - startTick < timeoutMs) {
+        if (IsRemoteModuleLoaded(processId, moduleName)) {
+            return true;
+        }
+
+        Sleep(50);
+    }
+
+    return IsRemoteModuleLoaded(processId, moduleName);
 }
 
 std::wstring ExtractFirstCommandLineToken(const wchar_t* commandLine) {
@@ -170,6 +213,7 @@ BOOL WINAPI HookedCreateProcessW(
 
     if (!alreadySuspended) {
         ResumeThread(lpProcessInformation->hThread);
+        WaitForRemoteModuleLoaded(lpProcessInformation->hProcess, L"fx-hook.dll", 5000);
     }
 
     return TRUE;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 enum class HookInstallStage {
     ProcessSpawn,
     ScriptingCore,
@@ -7,3 +9,5 @@ enum class HookInstallStage {
 };
 
 void NotifyHookStageInstalled(HookInstallStage stage);
+void LogFxMessage(const char* message);
+bool WaitForLogReady(std::uint32_t maxWaitMs = 30000);
