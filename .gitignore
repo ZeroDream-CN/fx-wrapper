@@ -46,3 +46,6 @@ CMakeUserPresets.json
 *.out
 *.app
 
+server/
+txData/
+.vs

@@ -1,0 +1,7 @@
+C:\PrivateProject\fx-wrapper\src\hook\dllmain.cpp;C:\PrivateProject\fx-wrapper\build\fx-hook.dir\Release\dllmain.obj
+C:\PrivateProject\fx-wrapper\src\hook\fx_log.cpp;C:\PrivateProject\fx-wrapper\build\fx-hook.dir\Release\fx_log.obj
+C:\PrivateProject\fx-wrapper\src\hook\hook_util.cpp;C:\PrivateProject\fx-wrapper\build\fx-hook.dir\Release\hook_util.obj
+C:\PrivateProject\fx-wrapper\src\hook\citizen_lua_api.cpp;C:\PrivateProject\fx-wrapper\build\fx-hook.dir\Release\citizen_lua_api.obj
+C:\PrivateProject\fx-wrapper\src\hook\lua_os_patch.cpp;C:\PrivateProject\fx-wrapper\build\fx-hook.dir\Release\lua_os_patch.obj
+C:\PrivateProject\fx-wrapper\src\hook\module_watcher.cpp;C:\PrivateProject\fx-wrapper\build\fx-hook.dir\Release\module_watcher.obj
+C:\PrivateProject\fx-wrapper\src\hook\hooks.cpp;C:\PrivateProject\fx-wrapper\build\fx-hook.dir\Release\hooks.obj
