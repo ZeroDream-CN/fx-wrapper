@@ -1,6 +1,6 @@
 #include "fx_log.h"
 
-#include <windows.h>
+#include "platform/platform.h"
 
 #include <atomic>
 #include <cstring>
@@ -16,8 +16,11 @@ struct FmtPrintfArgs {
     alignas(16) unsigned char data[64]{};
 };
 
-using PrintfvFn = void(__cdecl*)(std::string channel, std::string_view format, FmtPrintfArgs args);
-using ConHostPrintFn = void(__cdecl*)(const std::string& channel, const std::string& message);
+using PrintfvFn = void (*)(std::string channel, std::string_view format, FmtPrintfArgs args);
+
+#if defined(_WIN32)
+using ConHostPrintFn = void (*)(const std::string& channel, const std::string& message);
+#endif
 
 std::atomic<uint8_t> g_installedStages{0};
 std::atomic<bool> g_hooksInstalledLogged{false};
@@ -36,35 +39,37 @@ PrintfvFn ResolvePrintfv() {
         return cached;
     }
 
-    HMODULE coreRt = GetModuleHandleW(L"CoreRT.dll");
+    ModuleHandle coreRt = GetModuleHandleByName(CoreRuntimeModuleName());
     if (coreRt == nullptr) {
         return nullptr;
     }
 
-    cached = reinterpret_cast<PrintfvFn>(GetProcAddress(coreRt, "Printfv"));
+    cached = reinterpret_cast<PrintfvFn>(GetModuleSymbol(coreRt, "Printfv"));
     return cached;
 }
 
+#if defined(_WIN32)
 ConHostPrintFn ResolveConHostPrint() {
     static ConHostPrintFn cached = nullptr;
     if (cached != nullptr) {
         return cached;
     }
 
-    HMODULE conhost = GetModuleHandleW(L"conhost-server.dll");
+    ModuleHandle conhost = GetModuleHandleByName("conhost-server.dll");
     if (conhost == nullptr) {
         return nullptr;
     }
 
-    cached = reinterpret_cast<ConHostPrintFn>(GetProcAddress(
+    cached = reinterpret_cast<ConHostPrintFn>(GetModuleSymbol(
         conhost,
         "?Print@ConHost@@YAXAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@0@Z"));
     return cached;
 }
+#endif
 
 void WriteFallbackLog(const char* message) {
-    OutputDebugStringA("[fx-hook] ");
-    OutputDebugStringA(message);
+    DebugLog("[fx-hook] ");
+    DebugLog(message);
 }
 
 std::string EscapePrintfLiteral(const char* message) {
@@ -90,20 +95,20 @@ void WriteCoreLog(const char* channel, const char* message) {
     if (printfv != nullptr) {
         const std::string escaped = EscapePrintfLiteral(message);
         FmtPrintfArgs args{};
-        printfv(
-            std::string(channel),
-            std::string_view(escaped.data(), escaped.size()),
-            args);
+        printfv(std::string(channel), std::string_view(escaped.data(), escaped.size()), args);
         return;
     }
 
+#if defined(_WIN32)
     ConHostPrintFn conHostPrint = ResolveConHostPrint();
     if (conHostPrint != nullptr) {
         conHostPrint(std::string(channel), std::string(message));
         return;
     }
+#endif
 
     WriteFallbackLog(message);
+    DebugLogLine("");
 }
 
 void TryLogHooksInstalled() {
@@ -116,6 +121,7 @@ void TryLogHooksInstalled() {
         return;
     }
 
+    WaitForLogReady();
     WriteCoreLog(kLogChannel, kHooksInstalledMessage);
 }
 
@@ -135,15 +141,15 @@ void LogFxMessage(const char* message) {
 }
 
 bool WaitForLogReady(std::uint32_t maxWaitMs) {
-    constexpr DWORD kPollIntervalMs = 50;
-    DWORD waited = 0;
+    constexpr std::uint32_t kPollIntervalMs = 50;
+    std::uint32_t waited = 0;
 
     while (waited < maxWaitMs) {
         if (ResolvePrintfv() != nullptr) {
             return true;
         }
 
-        Sleep(kPollIntervalMs);
+        PlatformSleepMs(kPollIntervalMs);
         waited += kPollIntervalMs;
     }
 

@@ -1,0 +1,19 @@
+FROM alpine:3.20
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG http_proxy
+ARG https_proxy
+
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    http_proxy=${http_proxy} \
+    https_proxy=${https_proxy}
+
+RUN apk add --no-cache \
+    build-base \
+    cmake \
+    git \
+    linux-headers
+
+WORKDIR /src

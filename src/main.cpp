@@ -1,52 +1,40 @@
 #include "process_launcher.h"
 #include "injector.h"
 
+#include "platform/platform.h"
+
 #include <filesystem>
 #include <iostream>
-#include <string>
 
 namespace {
 
-void EnsureConsoleAttached() {
-    if (GetConsoleWindow() != nullptr) {
-        return;
-    }
-
-    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
-        return;
-    }
-
-    AllocConsole();
-}
-
-void PrintError(const std::wstring& message) {
-    std::wcerr << message << L'\n';
+void PrintError(const std::string& message) {
+    std::cerr << message << '\n';
 }
 
 }  // namespace
 
-int wmain(int argc, wchar_t* argv[]) {
-    EnsureConsoleAttached();
-
+int main(int argc, char* argv[]) {
     LaunchedProcess launchedProcess{};
-    std::wstring error;
+    std::string error;
 
-    if (!LaunchFXServerSuspended(argc, argv, launchedProcess, error)) {
+    if (!LaunchFXServer(argc, argv, launchedProcess, error)) {
         PrintError(error);
         return 1;
     }
 
-    const std::wstring hookDllPath = JoinPath(GetExecutableDirectory(), L"fx-hook.dll");
-    if (!std::filesystem::exists(hookDllPath)) {
-        PrintError(L"fx-hook.dll was not found next to FXWrapper.exe:\n" + hookDllPath);
+#if defined(_WIN32)
+    const std::string hookLibraryPath = GetHookLibraryPath();
+    if (!std::filesystem::exists(hookLibraryPath)) {
+        PrintError("fx-hook.dll was not found next to FXWrapper:\n" + hookLibraryPath);
         TerminateLaunchedProcess(launchedProcess);
         return 2;
     }
 
-    if (!InjectDll(
-            launchedProcess.processInfo.hProcess,
-            launchedProcess.processInfo.hThread,
-            hookDllPath,
+    if (!InjectHookLibrary(
+            launchedProcess.processHandle,
+            launchedProcess.threadHandle,
+            hookLibraryPath,
             error)) {
         PrintError(error);
         TerminateLaunchedProcess(launchedProcess);
@@ -59,11 +47,12 @@ int wmain(int argc, wchar_t* argv[]) {
         return 3;
     }
 
-    if (!WaitForInjectedModule(launchedProcess.processInfo.hProcess, hookDllPath, 5000, error)) {
+    if (!WaitForInjectedModule(launchedProcess.processHandle, hookLibraryPath, 15000, error)) {
         PrintError(error);
         TerminateLaunchedProcess(launchedProcess);
         return 4;
     }
+#endif
 
-    return static_cast<int>(WaitForProcessExit(launchedProcess));
+    return WaitForProcessExit(launchedProcess);
 }

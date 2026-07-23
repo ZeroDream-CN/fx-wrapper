@@ -1,13 +1,12 @@
 #pragma once
 
-#include <windows.h>
+#include "platform/platform.h"
 
-#include <MinHook.h>
-
-bool EnsureMinHookInitialized();
-bool CreateAndEnableHook(void* target, void* detour, void** original, const char* symbolName);
-
-const wchar_t* GetHookDllPath();
-bool InjectDllApc(HANDLE processHandle, HANDLE mainThreadHandle, const wchar_t* dllPath);
+#include <string>
 
 bool InstallProcessSpawnHooks();
+const char* GetHookLibraryPath();
+
+#if defined(_WIN32)
+bool InjectHookLibraryApc(void* processHandle, void* mainThreadHandle, const char* libraryPath);
+#endif

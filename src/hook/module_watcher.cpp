@@ -1,68 +1,29 @@
 #include "module_watcher.h"
 
-#include <windows.h>
-#include <winternl.h>
+#include "platform/platform.h"
+
+#if !defined(_WIN32)
+#include "platform/linux_thread.h"
+#endif
 
 #include <atomic>
-#include <cwctype>
+#include <chrono>
 #include <functional>
-#include <string>
-#include <string_view>
 #include <thread>
 
-#ifndef NTSTATUS
-using NTSTATUS = LONG;
-#endif
-
-#ifndef _LDR_DLL_NOTIFICATION_DATA_DEFINED
-#define _LDR_DLL_NOTIFICATION_DATA_DEFINED
-typedef struct _LDR_DLL_NOTIFICATION_DATA {
-    union {
-        struct {
-            const UNICODE_STRING FullDllName;
-            const UNICODE_STRING BaseDllName;
-            PVOID DllBase;
-            ULONG SizeOfImage;
-        } Loaded;
-    } DllInfo;
-} LDR_DLL_NOTIFICATION_DATA, *PLDR_DLL_NOTIFICATION_DATA;
-#endif
-
 namespace {
-
-constexpr wchar_t kTargetModuleName[] = L"citizen-scripting-core.dll";
-constexpr ULONGLONG kPollIntervalMs = 100;
-constexpr ULONGLONG kPollTimeoutMs = 60'000;
-
-using PLDR_DLL_NOTIFICATION_FUNCTION = VOID(CALLBACK*)(ULONG, const LDR_DLL_NOTIFICATION_DATA*, PVOID);
-
-using PLDR_REGISTER_DLL_NOTIFICATION = NTSTATUS(NTAPI*)(ULONG, PLDR_DLL_NOTIFICATION_FUNCTION, PVOID, PVOID*);
-using PLDR_UNREGISTER_DLL_NOTIFICATION = NTSTATUS(NTAPI*)(PVOID);
 
 std::function<void()> g_onModuleLoaded;
 std::atomic<bool> g_moduleHandled{false};
 std::atomic<bool> g_stopRequested{false};
-PVOID g_notificationCookie = nullptr;
 std::thread g_pollThread;
 
-bool EndsWithIgnoreCase(std::wstring_view value, std::wstring_view suffix) {
-    if (suffix.size() > value.size()) {
-        return false;
-    }
+constexpr std::uint32_t kPollIntervalMs = 100;
+constexpr std::uint32_t kPollTimeoutMs = 300'000;
 
-    const size_t offset = value.size() - suffix.size();
-    for (size_t i = 0; i < suffix.size(); ++i) {
-        if (towlower(value[offset + i]) != towlower(suffix[i])) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-bool IsTargetModuleLoaded() {
-    HMODULE module = GetModuleHandleW(kTargetModuleName);
-    return module != nullptr;
+bool IsScriptingCoreAvailable() {
+    return GetModuleHandleByName(ScriptingCoreModuleName()) != nullptr ||
+        IsModuleMapped("citizen-scripting-core");
 }
 
 void InvokeModuleLoadedOnce() {
@@ -71,81 +32,35 @@ void InvokeModuleLoadedOnce() {
         return;
     }
 
-    // Exports may not be bound immediately after the module load notification.
-    Sleep(200);
+    PlatformSleepMs(200);
 
     if (g_onModuleLoaded) {
         g_onModuleLoaded();
     }
 }
 
-void CALLBACK DllNotificationCallback(ULONG notificationReason, const LDR_DLL_NOTIFICATION_DATA* data, PVOID) {
-    if (notificationReason != 1 || data == nullptr) {
-        return;
-    }
-
-    const UNICODE_STRING& baseName = data->DllInfo.Loaded.BaseDllName;
-    if (baseName.Buffer == nullptr || baseName.Length == 0) {
-        return;
-    }
-
-    const std::wstring_view moduleName(baseName.Buffer, baseName.Length / sizeof(wchar_t));
-    if (EndsWithIgnoreCase(moduleName, kTargetModuleName)) {
-        InvokeModuleLoadedOnce();
-    }
-}
-
 void PollForTargetModule() {
-    const ULONGLONG startTick = GetTickCount64();
+    const auto startTick = std::chrono::steady_clock::now();
     while (!g_stopRequested.load() && !g_moduleHandled.load()) {
-        if (IsTargetModuleLoaded()) {
+        if (IsScriptingCoreAvailable()) {
+            DebugLogLine("[fx-hook] Scripting core module detected");
             InvokeModuleLoadedOnce();
             return;
         }
 
-        if (GetTickCount64() - startTick >= kPollTimeoutMs) {
-            OutputDebugStringW(L"[fx-hook] Timed out waiting for citizen-scripting-core.dll\n");
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - startTick);
+        if (elapsed.count() >= kPollTimeoutMs) {
+            DebugLogLine("[fx-hook] Timed out waiting for scripting core module");
             return;
         }
 
-        Sleep(static_cast<DWORD>(kPollIntervalMs));
+        PlatformSleepMs(kPollIntervalMs);
     }
 }
 
-bool RegisterDllNotification() {
-    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-    if (ntdll == nullptr) {
-        return false;
-    }
-
-    auto registerNotification = reinterpret_cast<PLDR_REGISTER_DLL_NOTIFICATION>(
-        GetProcAddress(ntdll, "LdrRegisterDllNotification"));
-    if (registerNotification == nullptr) {
-        return false;
-    }
-
-    const NTSTATUS status = registerNotification(0, DllNotificationCallback, nullptr, &g_notificationCookie);
-    return status >= 0 && g_notificationCookie != nullptr;
-}
-
-void UnregisterDllNotification() {
-    if (g_notificationCookie == nullptr) {
-        return;
-    }
-
-    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-    if (ntdll == nullptr) {
-        g_notificationCookie = nullptr;
-        return;
-    }
-
-    auto unregisterNotification = reinterpret_cast<PLDR_UNREGISTER_DLL_NOTIFICATION>(
-        GetProcAddress(ntdll, "LdrUnregisterDllNotification"));
-    if (unregisterNotification != nullptr) {
-        unregisterNotification(g_notificationCookie);
-    }
-
-    g_notificationCookie = nullptr;
+static void PollForTargetModuleEntry() {
+    PollForTargetModule();
 }
 
 }  // namespace
@@ -155,16 +70,16 @@ void StartModuleWatcher(std::function<void()> onModuleLoaded) {
     g_moduleHandled.store(false);
     g_stopRequested.store(false);
 
-    if (IsTargetModuleLoaded()) {
+    if (IsScriptingCoreAvailable()) {
         InvokeModuleLoadedOnce();
         return;
     }
 
-    if (!RegisterDllNotification()) {
-        OutputDebugStringW(L"[fx-hook] LdrRegisterDllNotification unavailable, using polling fallback\n");
-    }
-
+#if defined(_WIN32)
     g_pollThread = std::thread(PollForTargetModule);
+#else
+    LaunchDetachedThread(PollForTargetModuleEntry);
+#endif
 }
 
 void StopModuleWatcher() {
@@ -174,6 +89,5 @@ void StopModuleWatcher() {
         g_pollThread.join();
     }
 
-    UnregisterDllNotification();
     g_onModuleLoaded = nullptr;
 }

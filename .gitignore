@@ -1,51 +1,86 @@
-# ---> CMake
+# --- Build directories ---
+build/
+build-*/
+out/
+dist/
+
+# --- CMake ---
 CMakeLists.txt.user
 CMakeCache.txt
-CMakeFiles
-CMakeScripts
-Testing
+CMakeFiles/
+CMakeScripts/
+Testing/
 Makefile
 cmake_install.cmake
 install_manifest.txt
 compile_commands.json
 CTestTestfile.cmake
-_deps
+_deps/
 CMakeUserPresets.json
 
-# ---> C++
-# Prerequisites
+# --- C/C++ artifacts ---
 *.d
-
-# Compiled Object files
 *.slo
 *.lo
 *.o
 *.obj
-
-# Precompiled Headers
 *.gch
 *.pch
-
-# Compiled Dynamic libraries
 *.so
 *.dylib
 *.dll
-
-# Fortran module files
 *.mod
 *.smod
-
-# Compiled Static libraries
 *.lai
 *.la
 *.a
 *.lib
-
-# Executables
 *.exe
 *.out
 *.app
+*.pdb
+*.ilk
+*.exp
+*.idb
+*.ipdb
+*.iobj
 
+# --- FXServer local runtimes & runtime data ---
 server/
+server-linux/
 txData/
-.vs
+cache/
+
+# --- Web (Vite / Vue) ---
+web/node_modules/
+web/dist/
+
+# --- IDE / editors ---
+.vs/
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.VC.opendb
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- Logs, temp, local ---
+.replxx_history
+/tmp-*
+*.zip
+
+# --- Secrets ---
+.env
+.env.*
+!.env.example

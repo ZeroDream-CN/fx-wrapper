@@ -1,5 +1,8 @@
 #include "citizen_lua_api.h"
 
+#include "binary_module.h"
+#include "platform/platform.h"
+
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
@@ -11,74 +14,6 @@ constexpr int kTValueSize = 0x20;
 constexpr int kTypeOffset = 0x10;
 constexpr std::size_t kSandboxExecuteScanSize = 512;
 
-bool IsAddressInsideModule(HMODULE module, const void* address) {
-    if (module == nullptr || address == nullptr) {
-        return false;
-    }
-
-    const auto dosHeader = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
-    if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE) {
-        return false;
-    }
-
-    const auto ntHeaders = reinterpret_cast<const IMAGE_NT_HEADERS*>(
-        reinterpret_cast<const std::uint8_t*>(module) + dosHeader->e_lfanew);
-    if (ntHeaders->Signature != IMAGE_NT_SIGNATURE) {
-        return false;
-    }
-
-    const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(module);
-    const std::uintptr_t end = base + ntHeaders->OptionalHeader.SizeOfImage;
-    const std::uintptr_t value = reinterpret_cast<std::uintptr_t>(address);
-    return value >= base && value < end;
-}
-
-const char* FindNullTerminatedString(HMODULE module, const char* needle) {
-    if (module == nullptr || needle == nullptr) {
-        return nullptr;
-    }
-
-    const auto dosHeader = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
-    const auto ntHeaders = reinterpret_cast<const IMAGE_NT_HEADERS*>(
-        reinterpret_cast<const std::uint8_t*>(module) + dosHeader->e_lfanew);
-    const std::size_t imageSize = ntHeaders->OptionalHeader.SizeOfImage;
-    const auto imageBase = reinterpret_cast<const std::uint8_t*>(module);
-    const std::size_t needleLength = std::strlen(needle);
-
-    for (std::size_t offset = 0; offset + needleLength + 1 <= imageSize; ++offset) {
-        if (std::memcmp(imageBase + offset, needle, needleLength) != 0) {
-            continue;
-        }
-
-        if (imageBase[offset + needleLength] != '\0') {
-            continue;
-        }
-
-        return reinterpret_cast<const char*>(imageBase + offset);
-    }
-
-    return nullptr;
-}
-
-bool MatchesSystemLibsEntry(
-    HMODULE module,
-    const std::uintptr_t* entry,
-    const char* const expectedNames[],
-    int expectedCount) {
-    for (int index = 0; index < expectedCount; ++index) {
-        const char* name = reinterpret_cast<const char*>(entry[index * 2]);
-        if (!IsAddressInsideModule(module, name)) {
-            return false;
-        }
-
-        if (std::strcmp(name, expectedNames[index]) != 0) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
 void* FindCallAfterStringReference(const void* function, const char* stringAddress, std::size_t scanSize) {
     if (function == nullptr || stringAddress == nullptr) {
         return nullptr;
@@ -89,28 +24,22 @@ void* FindCallAfterStringReference(const void* function, const char* stringAddre
     const std::uintptr_t targetString = reinterpret_cast<std::uintptr_t>(stringAddress);
 
     for (std::size_t index = 0; index + 7 < scanSize; ++index) {
-        if (bytes[index] != 0x48 || bytes[index + 1] != 0x8D) {
-            continue;
-        }
-
-        const std::uint8_t modrm = bytes[index + 2];
-        if ((modrm & 0xC7) != 0x05) {
-            continue;
-        }
-
-        const std::int32_t displacement = *reinterpret_cast<const std::int32_t*>(bytes + index + 3);
-        const std::uintptr_t referencedAddress = functionAddress + index + 7 + displacement;
-        if (referencedAddress != targetString) {
+        std::uintptr_t referencedAddress = 0;
+        if (!TryDecodeRipRelativeReference(bytes + index, scanSize - index, functionAddress + index, targetString,
+                referencedAddress)) {
             continue;
         }
 
         for (std::size_t callIndex = index; callIndex < index + 32 && callIndex + 5 < scanSize; ++callIndex) {
-            if (bytes[callIndex] != 0xE8) {
-                continue;
+            if (bytes[callIndex] == 0xE8) {
+                const std::int32_t relative = *reinterpret_cast<const std::int32_t*>(bytes + callIndex + 1);
+                return reinterpret_cast<void*>(functionAddress + callIndex + 5 + relative);
             }
 
-            const std::int32_t relative = *reinterpret_cast<const std::int32_t*>(bytes + callIndex + 1);
-            return reinterpret_cast<void*>(functionAddress + callIndex + 5 + relative);
+            if (callIndex + 6 <= scanSize && bytes[callIndex] == 0x67 && bytes[callIndex + 1] == 0xE8) {
+                const std::int32_t relative = *reinterpret_cast<const std::int32_t*>(bytes + callIndex + 2);
+                return reinterpret_cast<void*>(functionAddress + callIndex + 6 + relative);
+            }
         }
     }
 
@@ -155,57 +84,444 @@ const char* ReadStringFromTopRelative(lua_State* L, int slotOffsetFromTop) {
     return ReadStringFromSlot(slot);
 }
 
+constexpr std::size_t kCitizenLuaTableEntrySize = 48;
+constexpr std::uintptr_t kCitizenLuaTableMetaMarker = 8;
+constexpr char kLuaFxOpenOsSymbol[] = "_ZN2fx13lua_fx_openosEP9lua_State";
+constexpr std::size_t kOpenOsScanSize = 128;
+
+bool LooksLikeSystemLibsTable(const ModuleImage& image, const void* table) {
+    if (table == nullptr) {
+        return false;
+    }
+
+    const auto* entry = reinterpret_cast<const std::uintptr_t*>(table);
+    if (entry[0] == 0) {
+        return false;
+    }
+
+    const char* firstName = reinterpret_cast<const char*>(entry[0]);
+    if (!IsAddressInsideModule(image, firstName)) {
+        return false;
+    }
+
+    return std::strcmp(firstName, "clock") == 0;
+}
+
+void* FindInLuaRegTable(const ModuleImage& image, const void* table, const char* functionName) {
+    if (table == nullptr || functionName == nullptr) {
+        return nullptr;
+    }
+
+    const auto* entry = reinterpret_cast<const std::uintptr_t*>(table);
+    for (int index = 0; index < 64; ++index, entry += 2) {
+        if (entry[0] == 0) {
+            break;
+        }
+
+        const char* entryName = reinterpret_cast<const char*>(entry[0]);
+        if (!IsAddressInsideModule(image, entryName)) {
+            break;
+        }
+
+        void* function = reinterpret_cast<void*>(entry[1]);
+        if (function == nullptr) {
+            break;
+        }
+
+        if (std::strcmp(entryName, functionName) != 0) {
+            continue;
+        }
+
+        if (!IsAddressInsideModule(image, function) || !IsAddressExecutable(image, function)) {
+            return nullptr;
+        }
+
+        return function;
+    }
+
+    return nullptr;
+}
+
+void* FindSystemLibsTableFromOpenOs(const ModuleImage& image) {
+    ModuleHandle module = image.handle;
+    if (module == nullptr) {
+        module = GetModuleHandleByName(ScriptingLuaModuleName());
+    }
+
+    if (module == nullptr) {
+        return nullptr;
+    }
+
+    void* openOs = GetModuleSymbol(module, kLuaFxOpenOsSymbol);
+    if (openOs == nullptr || !IsAddressExecutable(image, openOs)) {
+        return nullptr;
+    }
+
+    const auto* bytes = reinterpret_cast<const std::uint8_t*>(openOs);
+    const std::uintptr_t functionAddress = reinterpret_cast<std::uintptr_t>(openOs);
+    for (std::size_t index = 0; index + 7 < kOpenOsScanSize; ++index) {
+        std::uintptr_t referencedAddress = 0;
+        if (!TryDecodeRipRelativeLea(
+                bytes + index, kOpenOsScanSize - index, functionAddress + index, referencedAddress)) {
+            continue;
+        }
+
+        void* table = reinterpret_cast<void*>(referencedAddress);
+        if (!IsAddressInsideModule(image, table) || IsAddressExecutable(image, table)) {
+            continue;
+        }
+
+        if (LooksLikeSystemLibsTable(image, table)) {
+            return table;
+        }
+    }
+
+    return nullptr;
+}
+
+void* FindClassicLuaRegFunction(const ModuleImage& image, const char* functionName) {
+    if (functionName == nullptr) {
+        return nullptr;
+    }
+
+    const char* nameString = FindNullTerminatedString(image, functionName);
+    if (nameString == nullptr) {
+        return nullptr;
+    }
+
+    const std::uintptr_t namePointer = reinterpret_cast<std::uintptr_t>(nameString);
+
+    auto scanSegment = [&](const std::uint8_t* base, std::size_t size) -> void* {
+        if (base == nullptr || size < (2 * sizeof(std::uintptr_t))) {
+            return nullptr;
+        }
+
+        for (std::size_t offset = 0; offset + (2 * sizeof(std::uintptr_t)) <= size;
+             offset += sizeof(std::uintptr_t)) {
+            const auto* entry = reinterpret_cast<const std::uintptr_t*>(base + offset);
+            if (entry[0] != namePointer) {
+                continue;
+            }
+
+            void* function = reinterpret_cast<void*>(entry[1]);
+            if (!IsAddressInsideModule(image, function) || !IsAddressExecutable(image, function)) {
+                continue;
+            }
+
+            const char* entryName = reinterpret_cast<const char*>(entry[0]);
+            if (!IsAddressInsideModule(image, entryName) || std::strcmp(entryName, functionName) != 0) {
+                continue;
+            }
+
+            return function;
+        }
+
+        return nullptr;
+    };
+
+    if (!image.segments.empty()) {
+        for (const ModuleSegment& segment : image.segments) {
+            if (void* found = scanSegment(segment.base, segment.size)) {
+                return found;
+            }
+        }
+
+        return nullptr;
+    }
+
+    if (image.base == nullptr || image.size == 0) {
+        return nullptr;
+    }
+
+    return scanSegment(image.base, image.size);
+}
+
+bool LooksLikeCitizenLuaTableEntry(const std::uintptr_t* entry) {
+    return entry[2] == kCitizenLuaTableMetaMarker && entry[5] == kCitizenLuaTableMetaMarker;
+}
+
+void* FindCitizenLuaTableFunction(const ModuleImage& image, const char* functionName) {
+    if (functionName == nullptr) {
+        return nullptr;
+    }
+
+    const char* nameString = FindNullTerminatedString(image, functionName);
+    if (nameString == nullptr) {
+        return nullptr;
+    }
+
+    const std::uintptr_t namePointer = reinterpret_cast<std::uintptr_t>(nameString);
+    void* bestMatch = nullptr;
+
+    auto considerEntry = [&](const std::uintptr_t* entry) -> void* {
+        if (entry[0] != namePointer) {
+            return nullptr;
+        }
+
+        if (!LooksLikeCitizenLuaTableEntry(entry)) {
+            return nullptr;
+        }
+
+        void* function = reinterpret_cast<void*>(entry[3]);
+        if (!IsAddressInsideModule(image, function) || !IsAddressExecutable(image, function)) {
+            return nullptr;
+        }
+
+        const char* entryName = reinterpret_cast<const char*>(entry[0]);
+        if (!IsAddressInsideModule(image, entryName) || std::strcmp(entryName, functionName) != 0) {
+            return nullptr;
+        }
+
+        return function;
+    };
+
+    auto scanSegment = [&](const std::uint8_t* base, std::size_t size) {
+        if (base == nullptr || size < kCitizenLuaTableEntrySize) {
+            return;
+        }
+
+        for (std::size_t offset = 0; offset + kCitizenLuaTableEntrySize <= size; offset += sizeof(std::uintptr_t)) {
+            const auto* entry = reinterpret_cast<const std::uintptr_t*>(base + offset);
+            if (void* function = considerEntry(entry)) {
+                if (std::strcmp(functionName, "execute") == 0 &&
+                    FunctionReferencesString(image, function, "Permission denied", 0x200)) {
+                    bestMatch = function;
+                    return;
+                }
+
+                bestMatch = function;
+            }
+        }
+    };
+
+    if (!image.segments.empty()) {
+        for (const ModuleSegment& segment : image.segments) {
+            scanSegment(segment.base, segment.size);
+        }
+    } else if (image.base != nullptr && image.size > 0) {
+        scanSegment(image.base, image.size);
+    }
+
+    return bestMatch;
+}
+
+void* FindCitizenLuaTableSiblingFunction(
+    const ModuleImage& image,
+    void* knownFunction,
+    const char* knownName,
+    const char* targetName) {
+    if (knownFunction == nullptr || knownName == nullptr || targetName == nullptr) {
+        return nullptr;
+    }
+
+    const char* knownNameString = FindNullTerminatedString(image, knownName);
+    const char* targetNameString = FindNullTerminatedString(image, targetName);
+    if (knownNameString == nullptr || targetNameString == nullptr) {
+        return nullptr;
+    }
+
+    const std::uintptr_t knownNamePointer = reinterpret_cast<std::uintptr_t>(knownNameString);
+    const std::uintptr_t knownFunctionPointer = reinterpret_cast<std::uintptr_t>(knownFunction);
+    const std::uintptr_t targetNamePointer = reinterpret_cast<std::uintptr_t>(targetNameString);
+
+    auto scanSegment = [&](const std::uint8_t* base, std::size_t size) -> void* {
+        if (base == nullptr || size < kCitizenLuaTableEntrySize) {
+            return nullptr;
+        }
+
+        for (std::size_t offset = 0; offset + kCitizenLuaTableEntrySize <= size; offset += sizeof(std::uintptr_t)) {
+            const auto* entry = reinterpret_cast<const std::uintptr_t*>(base + offset);
+            if (entry[0] != knownNamePointer || entry[3] != knownFunctionPointer ||
+                !LooksLikeCitizenLuaTableEntry(entry)) {
+                continue;
+            }
+
+            for (int index = -8; index <= 32; ++index) {
+                const std::size_t siblingOffset =
+                    offset + (static_cast<std::size_t>(index) * kCitizenLuaTableEntrySize);
+                if (siblingOffset + kCitizenLuaTableEntrySize > size) {
+                    continue;
+                }
+
+                const auto* sibling = reinterpret_cast<const std::uintptr_t*>(base + siblingOffset);
+                if (sibling[0] != targetNamePointer || !LooksLikeCitizenLuaTableEntry(sibling)) {
+                    continue;
+                }
+
+                void* function = reinterpret_cast<void*>(sibling[3]);
+                if (!IsAddressExecutable(image, function)) {
+                    return nullptr;
+                }
+
+                return function;
+            }
+        }
+
+        return nullptr;
+    };
+
+    if (!image.segments.empty()) {
+        for (const ModuleSegment& segment : image.segments) {
+            if (void* found = scanSegment(segment.base, segment.size)) {
+                return found;
+            }
+        }
+
+        return nullptr;
+    }
+
+    if (image.base == nullptr || image.size == 0) {
+        return nullptr;
+    }
+
+    return scanSegment(image.base, image.size);
+}
+
 }  // namespace
 
-bool ResolveCitizenLuaApi(HMODULE module, void* sandboxExecute, CitizenLuaApi& outApi) {
-    const char* permissionDenied = FindNullTerminatedString(module, "Permission denied");
+bool ResolveCitizenLuaApi(const ModuleImage& image, void* sandboxExecute, CitizenLuaApi& outApi) {
+    const char* permissionDenied = FindNullTerminatedString(image, "Permission denied");
     void* pushString = FindCallAfterStringReference(sandboxExecute, permissionDenied, kSandboxExecuteScanSize);
     if (pushString == nullptr) {
         return false;
     }
 
     outApi.lua_pushstring = reinterpret_cast<CitizenLuaApi::LuaPushStringFn>(pushString);
-    return IsAddressInsideModule(module, reinterpret_cast<const void*>(outApi.lua_pushstring));
+    return IsAddressInsideModule(image, reinterpret_cast<const void*>(outApi.lua_pushstring));
 }
 
-void* FindSystemLibsFunction(HMODULE module, const char* functionName) {
-    if (functionName == nullptr) {
+void* FindSystemLibsFunctionFromOpenOs(const ModuleImage& image, const char* functionName) {
+    void* table = FindSystemLibsTableFromOpenOs(image);
+    if (table == nullptr) {
         return nullptr;
     }
 
-    const char* clockName = FindNullTerminatedString(module, "clock");
-    if (clockName == nullptr) {
+    return FindInLuaRegTable(image, table, functionName);
+}
+
+void* FindSystemLibsFunction(const ModuleImage& image, const char* functionName) {
+    if (void* fromOpenOs = FindSystemLibsFunctionFromOpenOs(image, functionName)) {
+        return fromOpenOs;
+    }
+
+    if (void* classicMatch = FindClassicLuaRegFunction(image, functionName)) {
+        return classicMatch;
+    }
+
+    return FindCitizenLuaTableFunction(image, functionName);
+}
+
+void* FindSiblingSandboxFunction(
+    const ModuleImage& image,
+    void* knownFunction,
+    const char* knownName,
+    const char* targetName) {
+    if (knownFunction == nullptr || knownName == nullptr || targetName == nullptr) {
         return nullptr;
     }
 
-    static const char* kExpectedNames[] = {"clock", "date", "difftime", "execute"};
+    const char* knownNameString = FindNullTerminatedString(image, knownName);
+    const char* targetNameString = FindNullTerminatedString(image, targetName);
+    if (knownNameString == nullptr || targetNameString == nullptr) {
+        return nullptr;
+    }
 
-    const auto dosHeader = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
-    const auto ntHeaders = reinterpret_cast<const IMAGE_NT_HEADERS*>(
-        reinterpret_cast<const std::uint8_t*>(module) + dosHeader->e_lfanew);
-    const std::size_t imageSize = ntHeaders->OptionalHeader.SizeOfImage;
-    const auto imageBase = reinterpret_cast<const std::uint8_t*>(module);
-    const std::uintptr_t clockPointer = reinterpret_cast<std::uintptr_t>(clockName);
+    if (void* citizenSibling =
+            FindCitizenLuaTableSiblingFunction(image, knownFunction, knownName, targetName)) {
+        return citizenSibling;
+    }
 
-    for (std::size_t offset = 0; offset + sizeof(std::uintptr_t) <= imageSize; offset += sizeof(std::uintptr_t)) {
-        if (*reinterpret_cast<const std::uintptr_t*>(imageBase + offset) != clockPointer) {
+    const std::uintptr_t knownNamePointer = reinterpret_cast<std::uintptr_t>(knownNameString);
+    const std::uintptr_t knownFunctionPointer = reinterpret_cast<std::uintptr_t>(knownFunction);
+
+    auto scanSegment = [&](const std::uint8_t* base, std::size_t size) -> void* {
+        if (base == nullptr || size < (2 * sizeof(std::uintptr_t))) {
+            return nullptr;
+        }
+
+        for (std::size_t offset = 0; offset + (2 * sizeof(std::uintptr_t)) <= size;
+             offset += sizeof(std::uintptr_t)) {
+            const auto* entry = reinterpret_cast<const std::uintptr_t*>(base + offset);
+            if (entry[0] != knownNamePointer || entry[1] != knownFunctionPointer) {
+                continue;
+            }
+
+            for (int index = 0; index < 64; ++index) {
+                const char* name = reinterpret_cast<const char*>(entry[index * 2]);
+                if (name == nullptr || !IsAddressInsideModule(image, name)) {
+                    break;
+                }
+
+                void* function = reinterpret_cast<void*>(entry[index * 2 + 1]);
+                if (function == nullptr) {
+                    break;
+                }
+
+                if (std::strcmp(name, targetName) == 0) {
+                    if (!IsAddressExecutable(image, function)) {
+                        return nullptr;
+                    }
+
+                    return function;
+                }
+            }
+        }
+
+        return nullptr;
+    };
+
+    if (!image.segments.empty()) {
+        for (const ModuleSegment& segment : image.segments) {
+            if (void* found = scanSegment(segment.base, segment.size)) {
+                return found;
+            }
+        }
+
+        return nullptr;
+    }
+
+    if (image.base == nullptr || image.size == 0) {
+        return nullptr;
+    }
+
+    return scanSegment(image.base, image.size);
+}
+
+void* FindSandboxExecuteFunction(const ModuleImage& image) {
+    if (void* tableExecute = FindSystemLibsFunctionFromOpenOs(image, "execute")) {
+        CitizenLuaApi api{};
+        if (ResolveCitizenLuaApi(image, tableExecute, api)) {
+            return tableExecute;
+        }
+    }
+
+    if (void* tableExecute = FindCitizenLuaTableFunction(image, "execute")) {
+        CitizenLuaApi api{};
+        if (ResolveCitizenLuaApi(image, tableExecute, api)) {
+            return tableExecute;
+        }
+    }
+
+    const char* permissionDenied = FindNullTerminatedString(image, "Permission denied");
+    if (permissionDenied == nullptr) {
+        return nullptr;
+    }
+
+    void* hits[32]{};
+    std::size_t hitCount = 0;
+    if (!FindLeaRipReference(image, permissionDenied, 32, hits, hitCount)) {
+        return nullptr;
+    }
+
+    for (std::size_t index = 0; index < hitCount; ++index) {
+        void* candidate = FindFunctionStartFromInstruction(image, hits[index]);
+        if (candidate == nullptr || !IsAddressExecutable(image, candidate)) {
             continue;
         }
 
-        const auto entry = reinterpret_cast<const std::uintptr_t*>(imageBase + offset);
-        if (!MatchesSystemLibsEntry(module, entry, kExpectedNames, 4)) {
-            continue;
-        }
-
-        for (int index = 0; index < 64; ++index) {
-            const char* name = reinterpret_cast<const char*>(entry[index * 2]);
-            if (name == nullptr || !IsAddressInsideModule(module, name)) {
-                break;
-            }
-
-            if (std::strcmp(name, functionName) == 0) {
-                return reinterpret_cast<void*>(entry[index * 2 + 1]);
-            }
+        CitizenLuaApi api{};
+        if (ResolveCitizenLuaApi(image, candidate, api)) {
+            return candidate;
         }
     }
 

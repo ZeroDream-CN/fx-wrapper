@@ -1,17 +1,20 @@
 #pragma once
 
-#include <windows.h>
+#include "platform/platform.h"
 
 struct lua_State;
 
 struct CitizenLuaApi {
-    using LuaPushStringFn = void(__cdecl*)(lua_State*, const char*);
+    using LuaPushStringFn = void (*)(lua_State*, const char*);
 
     LuaPushStringFn lua_pushstring = nullptr;
 };
 
-bool ResolveCitizenLuaApi(HMODULE module, void* sandboxExecute, CitizenLuaApi& outApi);
-void* FindSystemLibsFunction(HMODULE module, const char* functionName);
+bool ResolveCitizenLuaApi(const ModuleImage& image, void* sandboxExecute, CitizenLuaApi& outApi);
+void* FindSystemLibsFunction(const ModuleImage& image, const char* functionName);
+void* FindSystemLibsFunctionFromOpenOs(const ModuleImage& image, const char* functionName);
+void* FindSandboxExecuteFunction(const ModuleImage& image);
+void* FindSiblingSandboxFunction(const ModuleImage& image, void* knownFunction, const char* knownName, const char* targetName);
 
 const char* ReadLuaOptStringArg1(lua_State* L);
 const char* ReadLuaStringArgFromTop(lua_State* L, int offsetFromTop);

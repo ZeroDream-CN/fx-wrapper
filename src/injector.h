@@ -1,11 +1,7 @@
 #pragma once
 
-#include <windows.h>
-
+#include <cstdint>
 #include <string>
 
-// Inject a DLL via QueueUserAPC(LoadLibraryW) on the suspended main thread.
-bool InjectDll(HANDLE processHandle, HANDLE mainThreadHandle, const std::wstring& dllPath, std::wstring& outError);
-
-// Wait until the injected DLL appears in the target process module list.
-bool WaitForInjectedModule(HANDLE processHandle, const std::wstring& dllPath, DWORD timeoutMs, std::wstring& outError);
+bool InjectHookLibrary(void* processHandle, void* mainThreadHandle, const std::string& libraryPath, std::string& outError);
+bool WaitForInjectedModule(void* processHandle, const std::string& libraryPath, std::uint32_t timeoutMs, std::string& outError);

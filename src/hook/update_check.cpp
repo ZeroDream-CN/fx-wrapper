@@ -1,7 +1,9 @@
 #include "update_check.h"
 
 #include "fx_log.h"
+#include "platform/platform.h"
 
+#if defined(_WIN32)
 #include <windows.h>
 #include <winhttp.h>
 
@@ -277,3 +279,9 @@ void CheckForUpdates() {
 void StartUpdateCheckAsync() {
     CheckForUpdates();
 }
+
+#else
+
+void StartUpdateCheckAsync() {}
+
+#endif

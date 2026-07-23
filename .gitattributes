@@ -1,0 +1,2 @@
+scripts/build-linux-musl.sh text eol=lf
+scripts/Dockerfile.musl text eol=lf

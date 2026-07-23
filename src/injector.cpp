@@ -1,12 +1,18 @@
 #include "injector.h"
 
+#include "platform/platform.h"
+
+#if defined(_WIN32)
+
+#include <windows.h>
+
 #include <filesystem>
 #include <tlhelp32.h>
 
 namespace {
 
-bool IsRemoteModuleLoaded(DWORD processId, const wchar_t* moduleName) {
-    if (processId == 0 || moduleName == nullptr || moduleName[0] == L'\0') {
+bool IsRemoteModuleLoaded(DWORD processId, const char* moduleName) {
+    if (processId == 0 || moduleName == nullptr || moduleName[0] == '\0') {
         return false;
     }
 
@@ -15,24 +21,24 @@ bool IsRemoteModuleLoaded(DWORD processId, const wchar_t* moduleName) {
         return false;
     }
 
-    MODULEENTRY32W entry{};
+    MODULEENTRY32 entry{};
     entry.dwSize = sizeof(entry);
 
     bool found = false;
-    if (Module32FirstW(snapshot, &entry)) {
+    if (Module32First(snapshot, &entry)) {
         do {
-            if (_wcsicmp(entry.szModule, moduleName) == 0) {
+            if (_stricmp(entry.szModule, moduleName) == 0) {
                 found = true;
                 break;
             }
-        } while (Module32NextW(snapshot, &entry));
+        } while (Module32Next(snapshot, &entry));
     }
 
     CloseHandle(snapshot);
     return found;
 }
 
-bool WaitForRemoteModuleLoaded(HANDLE processHandle, const wchar_t* moduleName, DWORD timeoutMs) {
+bool WaitForRemoteModuleLoaded(HANDLE processHandle, const char* moduleName, DWORD timeoutMs) {
     const DWORD processId = GetProcessId(processHandle);
     const ULONGLONG startTick = GetTickCount64();
 
@@ -49,67 +55,90 @@ bool WaitForRemoteModuleLoaded(HANDLE processHandle, const wchar_t* moduleName, 
 
 }  // namespace
 
-bool InjectDll(HANDLE processHandle, HANDLE mainThreadHandle, const std::wstring& dllPath, std::wstring& outError) {
+bool InjectHookLibrary(void* processHandle, void* mainThreadHandle, const std::string& libraryPath, std::string& outError) {
     if (processHandle == nullptr || processHandle == INVALID_HANDLE_VALUE) {
-        outError = L"Invalid process handle for DLL injection.";
+        outError = "Invalid process handle for library injection.";
         return false;
     }
 
     if (mainThreadHandle == nullptr || mainThreadHandle == INVALID_HANDLE_VALUE) {
-        outError = L"Invalid main thread handle for DLL injection.";
+        outError = "Invalid main thread handle for library injection.";
         return false;
     }
 
-    if (dllPath.empty()) {
-        outError = L"DLL path is empty.";
+    if (libraryPath.empty()) {
+        outError = "Library path is empty.";
         return false;
     }
 
-    const size_t byteCount = (dllPath.size() + 1) * sizeof(wchar_t);
-    void* remoteMemory = VirtualAllocEx(processHandle, nullptr, byteCount, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    const size_t byteCount = libraryPath.size() + 1;
+    void* remoteMemory = VirtualAllocEx(
+        static_cast<HANDLE>(processHandle),
+        nullptr,
+        byteCount,
+        MEM_COMMIT | MEM_RESERVE,
+        PAGE_READWRITE);
     if (remoteMemory == nullptr) {
-        outError = L"VirtualAllocEx failed. GetLastError=" + std::to_wstring(GetLastError());
+        outError = "VirtualAllocEx failed. GetLastError=" + std::to_string(GetLastError());
         return false;
     }
 
     SIZE_T bytesWritten = 0;
-    if (!WriteProcessMemory(processHandle, remoteMemory, dllPath.c_str(), byteCount, &bytesWritten) ||
+    if (!WriteProcessMemory(
+            static_cast<HANDLE>(processHandle),
+            remoteMemory,
+            libraryPath.c_str(),
+            byteCount,
+            &bytesWritten) ||
         bytesWritten != byteCount) {
-        VirtualFreeEx(processHandle, remoteMemory, 0, MEM_RELEASE);
-        outError = L"WriteProcessMemory failed. GetLastError=" + std::to_wstring(GetLastError());
+        VirtualFreeEx(static_cast<HANDLE>(processHandle), remoteMemory, 0, MEM_RELEASE);
+        outError = "WriteProcessMemory failed. GetLastError=" + std::to_string(GetLastError());
         return false;
     }
 
-    HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+    HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
     if (kernel32 == nullptr) {
-        VirtualFreeEx(processHandle, remoteMemory, 0, MEM_RELEASE);
-        outError = L"GetModuleHandleW(kernel32.dll) failed.";
+        VirtualFreeEx(static_cast<HANDLE>(processHandle), remoteMemory, 0, MEM_RELEASE);
+        outError = "GetModuleHandleA(kernel32.dll) failed.";
         return false;
     }
 
-    auto loadLibraryW = reinterpret_cast<PAPCFUNC>(GetProcAddress(kernel32, "LoadLibraryW"));
-    if (loadLibraryW == nullptr) {
-        VirtualFreeEx(processHandle, remoteMemory, 0, MEM_RELEASE);
-        outError = L"GetProcAddress(LoadLibraryW) failed.";
+    auto loadLibraryA = reinterpret_cast<PAPCFUNC>(GetProcAddress(kernel32, "LoadLibraryA"));
+    if (loadLibraryA == nullptr) {
+        VirtualFreeEx(static_cast<HANDLE>(processHandle), remoteMemory, 0, MEM_RELEASE);
+        outError = "GetProcAddress(LoadLibraryA) failed.";
         return false;
     }
 
-    const DWORD apcResult = QueueUserAPC(loadLibraryW, mainThreadHandle, reinterpret_cast<ULONG_PTR>(remoteMemory));
+    const DWORD apcResult =
+        QueueUserAPC(loadLibraryA, static_cast<HANDLE>(mainThreadHandle), reinterpret_cast<ULONG_PTR>(remoteMemory));
     if (apcResult == 0) {
-        VirtualFreeEx(processHandle, remoteMemory, 0, MEM_RELEASE);
-        outError = L"QueueUserAPC failed. GetLastError=" + std::to_wstring(GetLastError());
+        VirtualFreeEx(static_cast<HANDLE>(processHandle), remoteMemory, 0, MEM_RELEASE);
+        outError = "QueueUserAPC failed. GetLastError=" + std::to_string(GetLastError());
         return false;
     }
 
     return true;
 }
 
-bool WaitForInjectedModule(HANDLE processHandle, const std::wstring& dllPath, DWORD timeoutMs, std::wstring& outError) {
-    const std::wstring moduleName = std::filesystem::path(dllPath).filename().wstring();
-    if (WaitForRemoteModuleLoaded(processHandle, moduleName.c_str(), timeoutMs)) {
+bool WaitForInjectedModule(void* processHandle, const std::string& libraryPath, std::uint32_t timeoutMs, std::string& outError) {
+    const std::string moduleName = std::filesystem::path(libraryPath).filename().string();
+    if (WaitForRemoteModuleLoaded(static_cast<HANDLE>(processHandle), moduleName.c_str(), timeoutMs)) {
         return true;
     }
 
-    outError = L"Timed out waiting for injected DLL to load: " + moduleName;
+    outError = "Timed out waiting for injected library to load: " + moduleName;
     return false;
 }
+
+#else
+
+bool InjectHookLibrary(void* /*processHandle*/, void* /*mainThreadHandle*/, const std::string& /*libraryPath*/, std::string& /*outError*/) {
+    return true;
+}
+
+bool WaitForInjectedModule(void* /*processHandle*/, const std::string& /*libraryPath*/, std::uint32_t /*timeoutMs*/, std::string& /*outError*/) {
+    return true;
+}
+
+#endif
