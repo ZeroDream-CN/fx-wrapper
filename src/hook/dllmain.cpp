@@ -2,6 +2,7 @@
 #include "hook_util.h"
 #include "lua_os_patch.h"
 #include "module_watcher.h"
+#include "node_hooks.h"
 #include "update_check.h"
 
 #include <windows.h>
@@ -14,6 +15,7 @@ DWORD WINAPI HookWorkerThread(LPVOID) {
 
     InstallProcessSpawnHooks();
     ScheduleLuaOsExecuteHookInstall();
+    ScheduleNodePermissionHookInstall();
     StartModuleWatcher([]() { ScheduleScriptingHookInstall(); });
     return 0;
 }

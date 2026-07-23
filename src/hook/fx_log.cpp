@@ -28,7 +28,7 @@ constexpr uint8_t StageBit(HookInstallStage stage) {
 
 constexpr uint8_t kAllStages =
     StageBit(HookInstallStage::ProcessSpawn) | StageBit(HookInstallStage::ScriptingCore) |
-    StageBit(HookInstallStage::LuaOs);
+    StageBit(HookInstallStage::ScriptingNode) | StageBit(HookInstallStage::LuaOs);
 
 PrintfvFn ResolvePrintfv() {
     static PrintfvFn cached = nullptr;

@@ -5,6 +5,7 @@
 enum class HookInstallStage {
     ProcessSpawn,
     ScriptingCore,
+    ScriptingNode,
     LuaOs,
 };
 

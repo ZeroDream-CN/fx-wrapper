@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(fx-wrapper VERSION 1.0.0 LANGUAGES CXX)
+project(fx-wrapper VERSION 1.0.1 LANGUAGES CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "fx-wrapper requires a 64-bit (x64) build.")
@@ -50,6 +50,7 @@ add_library(fx-hook SHARED
     src/hook/lua_os_patch.cpp
     src/hook/module_watcher.cpp
     src/hook/hooks.cpp
+    src/hook/node_hooks.cpp
     src/hook/update_check.cpp
 )
 
