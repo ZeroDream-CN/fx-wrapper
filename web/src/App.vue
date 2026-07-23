@@ -1,10 +1,11 @@
 <script setup>
 import { BookOpen, Download, Workflow } from '@lucide/vue'
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import IntroSection from './components/IntroSection.vue'
 import DownloadSection from './components/DownloadSection.vue'
 import HowItWorksSection from './components/HowItWorksSection.vue'
 import ContentDisclaimer from './components/ContentDisclaimer.vue'
+import { useHashNav } from './composables/useHashNav'
 
 const navItems = [
   { id: 'intro', label: '介绍', icon: BookOpen, component: IntroSection },
@@ -12,7 +13,8 @@ const navItems = [
   { id: 'how-it-works', label: '原理', icon: Workflow, component: HowItWorksSection },
 ]
 
-const activeId = ref('intro')
+const navIds = navItems.map((item) => item.id)
+const { activeId, navigate } = useHashNav(navIds)
 
 const activeItem = computed(() => navItems.find((item) => item.id === activeId.value) ?? navItems[0])
 </script>
@@ -20,7 +22,7 @@ const activeItem = computed(() => navItems.find((item) => item.id === activeId.v
 <template>
   <div class="min-h-screen md:flex md:h-full md:justify-center md:overflow-hidden">
     <div
-      class="mx-auto flex w-full max-w-6xl flex-1 flex-col px-4 py-1 md:py-8 sm:px-6 md:h-full md:min-h-0 md:px-8 lg:max-w-6xl"
+      class="mx-auto flex w-full max-w-6xl flex-1 flex-col px-4 py-1 sm:px-6 md:h-full md:min-h-0 md:px-8 md:py-8 lg:max-w-6xl"
     >
       <header class="shrink-0 md:hidden">
         <div class="flex items-center gap-2.5 py-4">
@@ -40,7 +42,7 @@ const activeItem = computed(() => navItems.find((item) => item.id === activeId.v
                 ? 'bg-neutral-100 font-medium text-neutral-900'
                 : 'text-neutral-400'
             "
-            @click="activeId = item.id"
+            @click="navigate(item.id)"
           >
             <component :is="item.icon" class="h-3.5 w-3.5 shrink-0" />
             {{ item.label }}
@@ -68,7 +70,7 @@ const activeItem = computed(() => navItems.find((item) => item.id === activeId.v
                   ? 'bg-neutral-100 font-medium text-neutral-900'
                   : 'text-neutral-500 hover:bg-neutral-50 hover:text-neutral-800'
               "
-              @click="activeId = item.id"
+              @click="navigate(item.id)"
             >
               <component
                 :is="item.icon"

@@ -12,6 +12,17 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#else
+#include <signal.h>
+#include <sys/prctl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <dirent.h>
 #endif
 
 namespace {
@@ -51,21 +62,92 @@ std::string QuoteArgument(const std::string& argument) {
     return quoted;
 }
 
+}  // namespace
+
 #if !defined(_WIN32)
 
-#include <signal.h>
-#include <sys/wait.h>
-#include <unistd.h>
+namespace {
 
-#include <cstdlib>
+void CollectDescendantPids(pid_t parentPid, std::vector<pid_t>& descendants) {
+    DIR* procDirectory = opendir("/proc");
+    if (procDirectory == nullptr) {
+        return;
+    }
 
-bool SetEnvValue(const std::string& key, const std::string& value) {
-    return setenv(key.c_str(), value.c_str(), 1) == 0;
+    while (dirent* entry = readdir(procDirectory)) {
+        if (entry->d_name[0] < '0' || entry->d_name[0] > '9') {
+            continue;
+        }
+
+        const pid_t candidatePid = static_cast<pid_t>(std::strtol(entry->d_name, nullptr, 10));
+        if (candidatePid <= 0) {
+            continue;
+        }
+
+        const std::string statPath = std::string("/proc/") + entry->d_name + "/stat";
+        FILE* statFile = std::fopen(statPath.c_str(), "r");
+        if (statFile == nullptr) {
+            continue;
+        }
+
+        pid_t processParentPid = 0;
+        if (std::fscanf(statFile, "%*d %*s %*c %d", &processParentPid) != 1) {
+            std::fclose(statFile);
+            continue;
+        }
+        std::fclose(statFile);
+
+        if (processParentPid != parentPid) {
+            continue;
+        }
+
+        CollectDescendantPids(candidatePid, descendants);
+        descendants.push_back(candidatePid);
+    }
+
+    closedir(procDirectory);
 }
 
-#endif
+void KillProcessTree(pid_t rootPid) {
+    if (rootPid <= 0) {
+        return;
+    }
+
+    if (kill(-rootPid, SIGTERM) == 0) {
+        PlatformSleepMs(300);
+        kill(-rootPid, SIGKILL);
+    }
+
+    std::vector<pid_t> descendants;
+    CollectDescendantPids(rootPid, descendants);
+    for (pid_t descendantPid : descendants) {
+        kill(descendantPid, SIGTERM);
+    }
+
+    PlatformSleepMs(300);
+
+    for (pid_t descendantPid : descendants) {
+        kill(descendantPid, SIGKILL);
+    }
+
+    kill(rootPid, SIGTERM);
+    PlatformSleepMs(100);
+    kill(rootPid, SIGKILL);
+}
+
+volatile sig_atomic_t gTerminationRequested = 0;
+LaunchedProcess* gActiveProcess = nullptr;
+
+void HandleLauncherTerminationSignal(int /*signalNumber*/) {
+    gTerminationRequested = 1;
+    if (gActiveProcess != nullptr && gActiveProcess->pid > 0) {
+        KillProcessTree(gActiveProcess->pid);
+    }
+}
 
 }  // namespace
+
+#endif
 
 std::string BuildCommandLine(int argc, char* argv[]) {
     std::ostringstream commandLine;
@@ -228,6 +310,12 @@ bool LaunchFXServer(int argc, char* argv[], LaunchedProcess& outProcess, std::st
     }
 
     if (pid == 0) {
+        if (setpgid(0, 0) != 0) {
+            _exit(127);
+        }
+
+        prctl(PR_SET_PDEATHSIG, SIGTERM);
+
         const std::string hookLibraryPath = GetHookLibraryPath();
         const std::string fxServerDir = GetDirectoryName(fxServerPath);
         const std::string alpineRoot = DetectAlpineRootFromServerDir(fxServerDir);
@@ -240,30 +328,62 @@ bool LaunchFXServer(int argc, char* argv[], LaunchedProcess& outProcess, std::st
         _exit(127);
     }
 
+    setpgid(pid, pid);
+
     outProcess.pid = pid;
     return true;
 }
 
 void TerminateLaunchedProcess(LaunchedProcess& process) {
     if (process.pid > 0) {
-        kill(process.pid, SIGKILL);
-        waitpid(process.pid, nullptr, 0);
+        KillProcessTree(process.pid);
+        waitpid(process.pid, nullptr, WNOHANG);
         process.pid = -1;
     }
 }
 
 int WaitForProcessExit(LaunchedProcess& process) {
+    struct sigaction previousIntHandler {};
+    struct sigaction previousTermHandler {};
+    struct sigaction terminationHandler {};
+    terminationHandler.sa_handler = HandleLauncherTerminationSignal;
+    sigemptyset(&terminationHandler.sa_mask);
+    terminationHandler.sa_flags = 0;
+    sigaction(SIGINT, &terminationHandler, &previousIntHandler);
+    sigaction(SIGTERM, &terminationHandler, &previousTermHandler);
+
+    gActiveProcess = &process;
+
     int status = 1;
-    if (process.pid > 0) {
-        waitpid(process.pid, &status, 0);
-        process.pid = -1;
+    while (process.pid > 0) {
+        const pid_t waitResult = waitpid(process.pid, &status, 0);
+        if (waitResult == process.pid) {
+            process.pid = -1;
+            break;
+        }
+
+        if (waitResult < 0 && errno != EINTR) {
+            break;
+        }
+
+        if (gTerminationRequested) {
+            KillProcessTree(process.pid);
+            waitpid(process.pid, &status, 0);
+            process.pid = -1;
+            break;
+        }
     }
+
+    gActiveProcess = nullptr;
+    gTerminationRequested = 0;
+    sigaction(SIGINT, &previousIntHandler, nullptr);
+    sigaction(SIGTERM, &previousTermHandler, nullptr);
 
     if (WIFEXITED(status)) {
         return WEXITSTATUS(status);
     }
 
-    return 1;
+    return gTerminationRequested ? 130 : 1;
 }
 
 bool ResumeLaunchedProcess(LaunchedProcess& /*process*/, std::string& /*outError*/) {

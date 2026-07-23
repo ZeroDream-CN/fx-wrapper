@@ -386,31 +386,44 @@ char* const* SanitizeEnvironmentForHostBinary(char* const envp[]) {
     constexpr const char* kPreloadPrefix = "LD_PRELOAD=";
     constexpr const char* kLibraryPathPrefix = "LD_LIBRARY_PATH=";
 
+    auto appendSanitizedEntries = [&](char* const* source) {
+        if (source == nullptr) {
+            return;
+        }
+
+        for (char* const* cursor = source; *cursor != nullptr; ++cursor) {
+            const std::string entry = *cursor;
+            if (entry.rfind(kPreloadPrefix, 0) == 0) {
+                const std::string cleaned =
+                    RemoveHookLibraryFromPreloadList(entry.substr(std::strlen(kPreloadPrefix)));
+                if (!cleaned.empty()) {
+                    storage.push_back(std::string(kPreloadPrefix) + cleaned);
+                }
+                continue;
+            }
+
+            if (entry.rfind(kLibraryPathPrefix, 0) == 0) {
+                const std::string cleaned = RemoveAlpineBootstrapPathsFromLibraryPath(
+                    entry.substr(std::strlen(kLibraryPathPrefix)));
+                if (!cleaned.empty()) {
+                    storage.push_back(std::string(kLibraryPathPrefix) + cleaned);
+                }
+                continue;
+            }
+
+            storage.push_back(entry);
+        }
+    };
+
+    appendSanitizedEntries(envp);
     if (envp == nullptr) {
-        return envp;
+        extern char** environ;
+        appendSanitizedEntries(environ);
     }
 
-    for (char* const* cursor = envp; *cursor != nullptr; ++cursor) {
-        const std::string entry = *cursor;
-        if (entry.rfind(kPreloadPrefix, 0) == 0) {
-            const std::string cleaned =
-                RemoveHookLibraryFromPreloadList(entry.substr(std::strlen(kPreloadPrefix)));
-            if (!cleaned.empty()) {
-                storage.push_back(std::string(kPreloadPrefix) + cleaned);
-            }
-            continue;
-        }
-
-        if (entry.rfind(kLibraryPathPrefix, 0) == 0) {
-            const std::string cleaned = RemoveAlpineBootstrapPathsFromLibraryPath(
-                entry.substr(std::strlen(kLibraryPathPrefix)));
-            if (!cleaned.empty()) {
-                storage.push_back(std::string(kLibraryPathPrefix) + cleaned);
-            }
-            continue;
-        }
-
-        storage.push_back(entry);
+    if (storage.empty()) {
+        pointers.push_back(nullptr);
+        return pointers.data();
     }
 
     for (std::string& entry : storage) {

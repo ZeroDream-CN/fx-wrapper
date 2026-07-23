@@ -28,7 +28,7 @@ const effects = [
         以往的做法一般是回退到旧版本工件，或者通过从源码构建 DLL 然后替换的形式，但前者会导致服务器在列表上不可见，且无法通过 UI 加入服务器（只能通过 F8 直连命令进入），后者则需要不断地去更新代码来适配最新的工件。而这个补丁，则是通过运行时动态 Hook（挂钩）FiveM 服务端来实现的，无需替换任何 DLL，始终兼容最新版本工件，无需担心服务器不出现在列表上。
       </p>
 
-      <img src="https://i.zerodream.net/f85f166a7192b7457aa6c0b0654f5da3.png" alt="沙盒限制" class="w-full h-auto rounded-lg shadow-md">
+      <img src="/images/sandbox-screenshot.png" alt="沙盒限制" class="h-auto w-full rounded-lg shadow-md">
     </div>
 
     <h3 class="mb-4 mt-10 flex items-center gap-2 text-lg font-medium text-neutral-900">

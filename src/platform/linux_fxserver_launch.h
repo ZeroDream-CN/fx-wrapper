@@ -33,6 +33,7 @@ char* const* BuildFxServerEnviron(
 int RunMuslShellCommand(const std::string& command);
 
 // Remove fx-hook preload entries before launching host (glibc) binaries.
+// When envp is null, the current process environ is sanitized instead.
 char* const* SanitizeEnvironmentForHostBinary(char* const envp[]);
 
 // Strip bootstrap LD_PRELOAD / Alpine LD_LIBRARY_PATH from the current process so

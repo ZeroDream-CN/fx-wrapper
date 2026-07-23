@@ -32,12 +32,6 @@ using PosixSpawnFn = int (*)(
     char* const argv[],
     char* const envp[]);
 
-ExecveFn g_realExecve = nullptr;
-ExecvpFn g_realExecvp = nullptr;
-ExecvpeFn g_realExecvpe = nullptr;
-PosixSpawnFn g_realPosixSpawn = nullptr;
-PosixSpawnFn g_realPosixSpawnp = nullptr;
-
 void DropFxHookEnvironmentInChildAfterFork() {
     DropFxHookEnvironmentFromProcess();
 }
@@ -56,38 +50,30 @@ void CacheHookLibraryPath() {
 }
 
 ExecveFn ResolveRealExecve() {
-    if (g_realExecve != nullptr) {
-        return g_realExecve;
-    }
-
-    g_realExecve = reinterpret_cast<ExecveFn>(dlsym(RTLD_NEXT, "execve"));
-    return g_realExecve;
+    static ExecveFn realExecve = reinterpret_cast<ExecveFn>(dlsym(RTLD_NEXT, "execve"));
+    return realExecve;
 }
 
 ExecvpFn ResolveRealExecvp() {
-    if (g_realExecvp != nullptr) {
-        return g_realExecvp;
-    }
-
-    g_realExecvp = reinterpret_cast<ExecvpFn>(dlsym(RTLD_NEXT, "execvp"));
-    return g_realExecvp;
+    static ExecvpFn realExecvp = reinterpret_cast<ExecvpFn>(dlsym(RTLD_NEXT, "execvp"));
+    return realExecvp;
 }
 
 ExecvpeFn ResolveRealExecvpe() {
-    if (g_realExecvpe != nullptr) {
-        return g_realExecvpe;
-    }
-
-    g_realExecvpe = reinterpret_cast<ExecvpeFn>(dlsym(RTLD_NEXT, "execvpe"));
-    return g_realExecvpe;
+    static ExecvpeFn realExecvpe = reinterpret_cast<ExecvpeFn>(dlsym(RTLD_NEXT, "execvpe"));
+    return realExecvpe;
 }
 
-void* ResolveLibcSymbol(const char* symbolName) {
-    void* symbol = dlsym(RTLD_NEXT, symbolName);
-    if (symbol == nullptr) {
-        symbol = dlsym(RTLD_DEFAULT, symbolName);
-    }
-    return symbol;
+PosixSpawnFn ResolveRealPosixSpawn() {
+    static PosixSpawnFn realPosixSpawn =
+        reinterpret_cast<PosixSpawnFn>(dlsym(RTLD_NEXT, "posix_spawn"));
+    return realPosixSpawn;
+}
+
+PosixSpawnFn ResolveRealPosixSpawnp() {
+    static PosixSpawnFn realPosixSpawnp =
+        reinterpret_cast<PosixSpawnFn>(dlsym(RTLD_NEXT, "posix_spawnp"));
+    return realPosixSpawnp;
 }
 
 bool IsFxServerLaunchRequest(const char* path, char* const argv[]) {
@@ -174,64 +160,6 @@ int SpawnFxServerWithHooks(
     return realPosixSpawn(pid, plan.execPath.c_str(), fileActions, attrp, plan.argv.data(), injectedEnv);
 }
 
-int ExecvpDetour(const char* file, char* const argv[]) {
-    if (IsFxServerLaunchRequest(file, argv)) {
-        return LaunchFxServerWithHooks(file, argv, environ);
-    }
-
-    return ResolveRealExecvp()(file, argv);
-}
-
-int ExecvpeDetour(const char* file, char* const argv[], char* const envp[]) {
-    if (IsFxServerLaunchRequest(file, argv)) {
-        return LaunchFxServerWithHooks(file, argv, envp);
-    }
-
-    char* const* sanitizedEnv = SanitizeEnvironmentForHostBinary(envp);
-    return ResolveRealExecvpe()(file, argv, sanitizedEnv);
-}
-
-int PosixSpawnDetour(
-    pid_t* pid,
-    const char* path,
-    const posix_spawn_file_actions_t* fileActions,
-    const posix_spawnattr_t* attrp,
-    char* const argv[],
-    char* const envp[]) {
-    if (IsFxServerLaunchRequest(path, argv)) {
-        return SpawnFxServerWithHooks(pid, path, fileActions, attrp, argv, envp, g_realPosixSpawn);
-    }
-
-    char* const* sanitizedEnv = SanitizeEnvironmentForHostBinary(envp);
-    return g_realPosixSpawn(pid, path, fileActions, attrp, argv, sanitizedEnv);
-}
-
-int PosixSpawnpDetour(
-    pid_t* pid,
-    const char* file,
-    const posix_spawn_file_actions_t* fileActions,
-    const posix_spawnattr_t* attrp,
-    char* const argv[],
-    char* const envp[]) {
-    if (IsFxServerLaunchRequest(file, argv)) {
-        return SpawnFxServerWithHooks(pid, file, fileActions, attrp, argv, envp, g_realPosixSpawnp);
-    }
-
-    char* const* sanitizedEnv = SanitizeEnvironmentForHostBinary(envp);
-    return g_realPosixSpawnp(pid, file, fileActions, attrp, argv, sanitizedEnv);
-}
-
-bool InstallLibcSpawnHook(const char* symbolName, void* detour, void** original) {
-    void* target = ResolveLibcSymbol(symbolName);
-    if (target == nullptr) {
-        DebugLog("[fx-hook] Failed to resolve libc symbol: ");
-        DebugLogLine(symbolName);
-        return false;
-    }
-
-    return CreateAndEnableHook(target, detour, original, symbolName);
-}
-
 }  // namespace
 
 extern "C" int execve(const char* pathname, char* const argv[], char* const envp[]) {
@@ -254,40 +182,32 @@ extern "C" int execv(const char* pathname, char* const argv[]) {
 }
 
 extern "C" int execvp(const char* file, char* const argv[]) {
-    if (g_realExecvp != nullptr) {
-        return ExecvpDetour(file, argv);
-    }
-
     if (IsFxServerLaunchRequest(file, argv)) {
         return LaunchFxServerWithHooks(file, argv, environ);
     }
 
-    ExecvpFn fallback = ResolveRealExecvp();
-    if (fallback == nullptr) {
+    ExecvpFn realExecvp = ResolveRealExecvp();
+    if (realExecvp == nullptr) {
         errno = ENOSYS;
         return -1;
     }
 
-    return fallback(file, argv);
+    return realExecvp(file, argv);
 }
 
 extern "C" int execvpe(const char* file, char* const argv[], char* const envp[]) {
-    if (g_realExecvpe != nullptr) {
-        return ExecvpeDetour(file, argv, envp);
-    }
-
     if (IsFxServerLaunchRequest(file, argv)) {
         return LaunchFxServerWithHooks(file, argv, envp);
     }
 
-    ExecvpeFn fallback = ResolveRealExecvpe();
-    if (fallback == nullptr) {
+    ExecvpeFn realExecvpe = ResolveRealExecvpe();
+    if (realExecvpe == nullptr) {
         errno = ENOSYS;
         return -1;
     }
 
     char* const* sanitizedEnv = SanitizeEnvironmentForHostBinary(envp);
-    return fallback(file, argv, sanitizedEnv);
+    return realExecvpe(file, argv, sanitizedEnv);
 }
 
 extern "C" int posix_spawn(
@@ -297,22 +217,18 @@ extern "C" int posix_spawn(
     const posix_spawnattr_t* attrp,
     char* const argv[],
     char* const envp[]) {
-    if (g_realPosixSpawn != nullptr) {
-        return PosixSpawnDetour(pid, path, fileActions, attrp, argv, envp);
-    }
-
-    PosixSpawnFn fallback = reinterpret_cast<PosixSpawnFn>(dlsym(RTLD_NEXT, "posix_spawn"));
-    if (fallback == nullptr) {
+    PosixSpawnFn realPosixSpawn = ResolveRealPosixSpawn();
+    if (realPosixSpawn == nullptr) {
         errno = ENOSYS;
         return -1;
     }
 
     if (IsFxServerLaunchRequest(path, argv)) {
-        return SpawnFxServerWithHooks(pid, path, fileActions, attrp, argv, envp, fallback);
+        return SpawnFxServerWithHooks(pid, path, fileActions, attrp, argv, envp, realPosixSpawn);
     }
 
     char* const* sanitizedEnv = SanitizeEnvironmentForHostBinary(envp);
-    return fallback(pid, path, fileActions, attrp, argv, sanitizedEnv);
+    return realPosixSpawn(pid, path, fileActions, attrp, argv, sanitizedEnv);
 }
 
 extern "C" int posix_spawnp(
@@ -322,22 +238,18 @@ extern "C" int posix_spawnp(
     const posix_spawnattr_t* attrp,
     char* const argv[],
     char* const envp[]) {
-    if (g_realPosixSpawnp != nullptr) {
-        return PosixSpawnpDetour(pid, file, fileActions, attrp, argv, envp);
-    }
-
-    PosixSpawnFn fallback = reinterpret_cast<PosixSpawnFn>(dlsym(RTLD_NEXT, "posix_spawnp"));
-    if (fallback == nullptr) {
+    PosixSpawnFn realPosixSpawnp = ResolveRealPosixSpawnp();
+    if (realPosixSpawnp == nullptr) {
         errno = ENOSYS;
         return -1;
     }
 
     if (IsFxServerLaunchRequest(file, argv)) {
-        return SpawnFxServerWithHooks(pid, file, fileActions, attrp, argv, envp, fallback);
+        return SpawnFxServerWithHooks(pid, file, fileActions, attrp, argv, envp, realPosixSpawnp);
     }
 
     char* const* sanitizedEnv = SanitizeEnvironmentForHostBinary(envp);
-    return fallback(pid, file, fileActions, attrp, argv, sanitizedEnv);
+    return realPosixSpawnp(pid, file, fileActions, attrp, argv, sanitizedEnv);
 }
 
 const char* GetHookLibraryPath() {
@@ -361,25 +273,6 @@ bool InstallProcessSpawnHooks() {
         DebugLogLine("[fx-hook] Failed to resolve real execve");
         return false;
     }
-
-    EnsureHookEngineInitialized();
-
-    InstallLibcSpawnHook(
-        "execvp",
-        reinterpret_cast<void*>(ExecvpDetour),
-        reinterpret_cast<void**>(&g_realExecvp));
-    InstallLibcSpawnHook(
-        "execvpe",
-        reinterpret_cast<void*>(ExecvpeDetour),
-        reinterpret_cast<void**>(&g_realExecvpe));
-    InstallLibcSpawnHook(
-        "posix_spawn",
-        reinterpret_cast<void*>(PosixSpawnDetour),
-        reinterpret_cast<void**>(&g_realPosixSpawn));
-    InstallLibcSpawnHook(
-        "posix_spawnp",
-        reinterpret_cast<void*>(PosixSpawnpDetour),
-        reinterpret_cast<void**>(&g_realPosixSpawnp));
 
     pthread_atfork(nullptr, nullptr, DropFxHookEnvironmentInChildAfterFork);
 

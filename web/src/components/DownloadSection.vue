@@ -9,9 +9,14 @@ import {
   RefreshCw,
   Tag,
 } from '@lucide/vue'
+import { computed } from 'vue'
+import { useFileDownload } from '../composables/useFileDownload'
 import { useUpdateInfo } from '../composables/useUpdateInfo'
 
 const { version, updateNotes, downloadUrl, loading, error, retry } = useUpdateInfo()
+const { downloading, progress, downloadError, downloadToFile } = useFileDownload()
+
+const fallbackFilename = computed(() => `FXWrapper-${version.value || 'latest'}.zip`)
 
 const steps = [
   { icon: Download, text: '下载 FXWrapper 压缩包，并解压文件' },
@@ -21,6 +26,13 @@ const steps = [
     text: '修改启动脚本，将 FXServer 替换为 FXWrapper，所有传递给 FXWrapper 的参数会原样透传给 FXServer',
   },
 ]
+
+function handleDownload() {
+  if (!downloadUrl.value) {
+    return
+  }
+  downloadToFile(downloadUrl.value, fallbackFilename.value)
+}
 </script>
 
 <template>
@@ -62,13 +74,30 @@ const steps = [
         </div>
       </dl>
 
-      <a
-        :href="downloadUrl"
-        class="mt-8 inline-flex items-center gap-2 border border-neutral-900 px-5 py-2.5 text-sm text-neutral-900 transition hover:bg-neutral-900 hover:text-white"
+      <button
+        type="button"
+        class="mt-8 inline-flex items-center gap-2 border border-neutral-900 px-5 py-2.5 text-sm text-neutral-900 transition hover:bg-neutral-900 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+        :disabled="downloading || !downloadUrl"
+        @click="handleDownload"
       >
-        <Download class="h-4 w-4" />
-        下载 v{{ version }}
-      </a>
+        <Loader2 v-if="downloading" class="h-4 w-4 animate-spin" />
+        <Download v-else class="h-4 w-4" />
+        {{ downloading ? '下载中…' : `下载 v${version}` }}
+      </button>
+
+      <div v-if="downloading" class="mt-4">
+        <div class="h-1.5 w-full overflow-hidden rounded-full bg-neutral-100">
+          <div
+            class="h-full rounded-full bg-neutral-900 transition-[width] duration-150"
+            :style="{ width: `${progress || 8}%` }"
+          />
+        </div>
+        <p class="mt-2 text-xs text-neutral-400">
+          {{ progress > 0 ? `已下载 ${progress}%` : '正在连接…' }}
+        </p>
+      </div>
+
+      <p v-if="downloadError" class="mt-3 text-xs text-red-600">{{ downloadError }}</p>
     </template>
 
     <h3 class="mb-4 mt-10 flex items-center gap-2 text-sm font-medium text-neutral-900">
