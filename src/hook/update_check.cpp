@@ -265,9 +265,9 @@ void CheckForUpdates() {
     std::string message = "^0==========================================================\n";
     message += "^2FXWrapper 有新的更新可以下载:^0 " + latestVersion + " (当前版本: " + currentVersion + ")";
     if (!updateNotes.empty()) {
-        message += "\n更新内容: " + updateNotes;
+        message += "\n\n[ 更新内容 ]\n" + updateNotes;
     }
-    message += "\n下载地址: " + downloadUrl + "\n";
+    message += "\n\n[ 下载地址 ]\n" + downloadUrl + "\n";
     message += "==========================================================\n";
 
     WaitForLogReady();
