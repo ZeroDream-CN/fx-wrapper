@@ -1,0 +1,67 @@
+# Linux musl binaries + web frontend (Docker agent)
+
+when:
+  - event: push
+  - event: pull_request
+  - event: tag
+
+labels:
+  platform: linux/amd64
+  backend: docker
+
+steps:
+  - name: build-linux
+    image: alpine:3.20
+    commands:
+      - apk add --no-cache build-base cmake git linux-headers
+      - cmake -S . -B build-linux-musl -DCMAKE_BUILD_TYPE=Release
+      - cmake --build build-linux-musl -j"$(nproc)"
+      - mkdir -p dist/linux-musl-amd64
+      - cp -f build-linux-musl/FXWrapper build-linux-musl/libfx-hook.so dist/linux-musl-amd64/
+      - ls -lh dist/linux-musl-amd64/
+
+  - name: build-web
+    image: node:22-alpine
+    depends_on: []
+    commands:
+      - cd web
+      - npm ci
+      - npm run build
+      - ls -lh dist/
+
+  - name: package
+    image: alpine:3.20
+    depends_on:
+      - build-linux
+      - build-web
+    commands:
+      - apk add --no-cache zip
+      - |
+        if [ -n "${CI_COMMIT_TAG:-}" ]; then
+          VERSION="${CI_COMMIT_TAG#v}"
+        else
+          VERSION="$(printf '%.8s' "${CI_COMMIT_SHA}")"
+        fi
+        echo "Packaging version: ${VERSION}"
+        mkdir -p artifacts
+        (cd dist/linux-musl-amd64 && zip -9 "../../artifacts/fx-wrapper-linux-musl-amd64-${VERSION}.zip" FXWrapper libfx-hook.so)
+        (cd web/dist && zip -9r "../../artifacts/fxwrapper-web-${VERSION}.zip" .)
+        ls -lh artifacts/
+
+  - name: release
+    image: woodpeckerci/plugin-release
+    depends_on:
+      - package
+    when:
+      - event: tag
+    settings:
+      api_key:
+        from_secret: release_token
+      files:
+        - artifacts/*
+      checksum:
+        - sha256
+      checksum-flatten: true
+      title: "${CI_COMMIT_TAG}"
+      generate-release-notes: true
+      file-exists: overwrite

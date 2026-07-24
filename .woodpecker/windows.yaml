@@ -1,0 +1,35 @@
+# Windows MSVC binaries (local backend agent)
+# Requires on the agent host: Visual Studio 2022/Build Tools (C++), CMake, Git, PowerShell
+#
+# Secrets (repo settings):
+#   release_token — forge API token with release/upload permission
+
+when:
+  - event: push
+  - event: pull_request
+  - event: tag
+
+labels:
+  platform: windows/amd64
+  backend: local
+
+steps:
+  - name: build-windows
+    image: powershell
+    commands:
+      - .\scripts\build-windows-amd64.ps1
+
+  - name: package
+    image: powershell
+    commands:
+      - .\scripts\ci-package-windows.ps1
+
+  - name: release
+    image: powershell
+    when:
+      - event: tag
+    environment:
+      RELEASE_TOKEN:
+        from_secret: release_token
+    commands:
+      - .\scripts\ci-upload-release.ps1 -Path artifacts
