@@ -1,13 +1,15 @@
 # Windows MSVC binaries (local backend agent)
-# Requires on the agent host: Visual Studio 2022/Build Tools (C++), CMake, Git, OpenSSH Client
+# Requires on the agent host: Visual Studio 2022/Build Tools (C++), CMake, Git, PowerShell
 #
 # Secrets (repo settings):
-#   clone_ssh_key  — Gitea Deploy Key 私钥全文（含 -----BEGIN...-----）
-#                    事件请勾选 push / tag（如需 PR 构建再勾选 pull_request）
-#   release_token  — forge API token（仅 tag 发布需要）
+#   clone_token   — Gitea Access Token（至少 read:repository；可与 release_token 用同一枚）
+#                   事件请勾选 push / tag（如需 PR 构建再勾选 pull_request）
+#   release_token — forge API token（仅 tag 发布需要；可与 clone_token 相同）
 #
-# 说明：Windows local backend 上 Git Credential Manager 会劫持 HTTPS 克隆并失败，
-# 因此这里跳过默认 clone，改用 SSH Deploy Key 拉取私有仓库。
+# 说明：
+# 1) Windows Git Credential Manager 会劫持默认 HTTPS clone（OAuthAuthenticationModes 报错）
+# 2) 本仓库 SSH 实际以 root@host:2233 使用（系统 SSH），与 Gitea Deploy Key(git@) 不是同一套认证
+# 因此跳过默认 clone，改用 Token + HTTPS，并显式关掉 credential helper。
 
 when:
   - event: push
@@ -24,10 +26,8 @@ steps:
   - name: clone
     image: powershell
     environment:
-      CLONE_SSH_KEY:
-        from_secret: clone_ssh_key
-      # 若 Gitea 汇报的 SSH URL 不对（例如端口不是 22），在此覆盖：
-      CLONE_SSH_URL: ssh://git@git.zerodream.net:2233/Akkariin/fx-wrapper.git
+      CLONE_TOKEN:
+        from_secret: clone_token
     commands:
       - |
         $$ErrorActionPreference = "Stop"
@@ -36,43 +36,42 @@ steps:
         New-Item -ItemType Directory -Force -Path $$ws | Out-Null
         Set-Location -LiteralPath $$ws
 
-        $$sshUrl = $$env:CLONE_SSH_URL
-        if ([string]::IsNullOrWhiteSpace($$sshUrl)) { $$sshUrl = $$env:CI_REPO_CLONE_SSH_URL }
-        if ([string]::IsNullOrWhiteSpace($$sshUrl)) {
-          throw "No SSH clone URL; set CLONE_SSH_URL or ensure CI_REPO_CLONE_SSH_URL is present."
+        $$token = $$env:CLONE_TOKEN
+        if ([string]::IsNullOrWhiteSpace($$token)) {
+          throw "CLONE_TOKEN is empty; add repo secret 'clone_token' (Gitea PAT with read:repository)."
         }
         $$sha = $$env:CI_COMMIT_SHA
         if ([string]::IsNullOrWhiteSpace($$sha)) {
           throw "CI_COMMIT_SHA is empty."
         }
-        $$key = $$env:CLONE_SSH_KEY
-        if ([string]::IsNullOrWhiteSpace($$key)) {
-          throw "CLONE_SSH_KEY is empty; add repo secret 'clone_ssh_key' (Deploy Key private key)."
+
+        $$cloneUrl = $$env:CI_REPO_CLONE_URL
+        if ([string]::IsNullOrWhiteSpace($$cloneUrl)) {
+          $$cloneUrl = "https://git.zerodream.net/$$($$env:CI_REPO_OWNER)/$$($$env:CI_REPO_NAME).git"
         }
+        # Strip any embedded userinfo; authenticate via Authorization header.
+        $$cloneUrl = $$cloneUrl -replace '^(https?://)[^@/]+@', '$$1'
 
-        $$keyPath = Join-Path $$env:TEMP ("wp-clone-" + [guid]::NewGuid().ToString("N") + ".key")
-        try {
-          $$normalized = ($$key -replace "`r`n", "`n" -replace "`r", "`n").TrimEnd() + "`n"
-          [System.IO.File]::WriteAllText($$keyPath, $$normalized, [System.Text.UTF8Encoding]::new($$false))
+        $$basic = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(("oauth2:" + $$token)))
+        $$env:GIT_TERMINAL_PROMPT = "0"
+        $$env:GCM_INTERACTIVE = "never"
+        # Disable helpers so Git Credential Manager cannot intercept.
+        $$gitAuthArgs = @(
+          "-c", "credential.helper=",
+          "-c", "http.extraHeader=Authorization: Basic $$basic"
+        )
 
-          # OpenSSH on Windows rejects keys that are too open.
-          icacls $$keyPath /inheritance:r | Out-Null
-          icacls $$keyPath /grant:r "$$($$env:USERNAME):(R)" | Out-Null
-
-          $$env:GIT_SSH_COMMAND = "ssh -i `"$$keyPath`" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
-          $$env:GIT_TERMINAL_PROMPT = "0"
-
-          Write-Host "SSH clone from $$sshUrl ($$sha)"
-          git init --object-format=sha1 -b main
-          git remote add origin $$sshUrl
-          git fetch --no-tags --depth=1 origin "+$${sha}:"
-          git checkout --force FETCH_HEAD
-          git reset --hard $$sha
-        } finally {
-          if (Test-Path -LiteralPath $$keyPath) {
-            Remove-Item -LiteralPath $$keyPath -Force -ErrorAction SilentlyContinue
-          }
-        }
+        Write-Host "HTTPS clone from $$cloneUrl ($$sha)"
+        & git @gitAuthArgs init --object-format=sha1 -b main
+        if ($$LASTEXITCODE -ne 0) { throw "git init failed" }
+        & git @gitAuthArgs remote add origin $$cloneUrl
+        if ($$LASTEXITCODE -ne 0) { throw "git remote add failed" }
+        & git @gitAuthArgs fetch --no-tags --depth=1 origin "+$${sha}:"
+        if ($$LASTEXITCODE -ne 0) { throw "git fetch failed" }
+        & git @gitAuthArgs checkout --force FETCH_HEAD
+        if ($$LASTEXITCODE -ne 0) { throw "git checkout failed" }
+        & git @gitAuthArgs reset --hard $$sha
+        if ($$LASTEXITCODE -ne 0) { throw "git reset failed" }
 
   - name: build-windows
     image: powershell
