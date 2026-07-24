@@ -1,8 +1,13 @@
 # Windows MSVC binaries (local backend agent)
-# Requires on the agent host: Visual Studio 2022/Build Tools (C++), CMake, Git, PowerShell
+# Requires on the agent host: Visual Studio 2022/Build Tools (C++), CMake, Git, OpenSSH Client
 #
 # Secrets (repo settings):
-#   release_token — forge API token with release/upload permission
+#   clone_ssh_key  — Gitea Deploy Key 私钥全文（含 -----BEGIN...-----）
+#                    事件请勾选 push / tag（如需 PR 构建再勾选 pull_request）
+#   release_token  — forge API token（仅 tag 发布需要）
+#
+# 说明：Windows local backend 上 Git Credential Manager 会劫持 HTTPS 克隆并失败，
+# 因此这里跳过默认 clone，改用 SSH Deploy Key 拉取私有仓库。
 
 when:
   - event: push
@@ -13,7 +18,62 @@ labels:
   platform: windows/amd64
   backend: local
 
+skip_clone: true
+
 steps:
+  - name: clone
+    image: powershell
+    environment:
+      CLONE_SSH_KEY:
+        from_secret: clone_ssh_key
+      # 若 Gitea 汇报的 SSH URL 不对（例如端口不是 22），在此覆盖：
+      CLONE_SSH_URL: ssh://git@git.zerodream.net:2233/Akkariin/fx-wrapper.git
+    commands:
+      - |
+        $$ErrorActionPreference = "Stop"
+        $$ws = $$env:CI_WORKSPACE
+        if ([string]::IsNullOrWhiteSpace($$ws)) { $$ws = (Get-Location).Path }
+        New-Item -ItemType Directory -Force -Path $$ws | Out-Null
+        Set-Location -LiteralPath $$ws
+
+        $$sshUrl = $$env:CLONE_SSH_URL
+        if ([string]::IsNullOrWhiteSpace($$sshUrl)) { $$sshUrl = $$env:CI_REPO_CLONE_SSH_URL }
+        if ([string]::IsNullOrWhiteSpace($$sshUrl)) {
+          throw "No SSH clone URL; set CLONE_SSH_URL or ensure CI_REPO_CLONE_SSH_URL is present."
+        }
+        $$sha = $$env:CI_COMMIT_SHA
+        if ([string]::IsNullOrWhiteSpace($$sha)) {
+          throw "CI_COMMIT_SHA is empty."
+        }
+        $$key = $$env:CLONE_SSH_KEY
+        if ([string]::IsNullOrWhiteSpace($$key)) {
+          throw "CLONE_SSH_KEY is empty; add repo secret 'clone_ssh_key' (Deploy Key private key)."
+        }
+
+        $$keyPath = Join-Path $$env:TEMP ("wp-clone-" + [guid]::NewGuid().ToString("N") + ".key")
+        try {
+          $$normalized = ($$key -replace "`r`n", "`n" -replace "`r", "`n").TrimEnd() + "`n"
+          [System.IO.File]::WriteAllText($$keyPath, $$normalized, [System.Text.UTF8Encoding]::new($$false))
+
+          # OpenSSH on Windows rejects keys that are too open.
+          icacls $$keyPath /inheritance:r | Out-Null
+          icacls $$keyPath /grant:r "$$($$env:USERNAME):(R)" | Out-Null
+
+          $$env:GIT_SSH_COMMAND = "ssh -i `"$$keyPath`" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+          $$env:GIT_TERMINAL_PROMPT = "0"
+
+          Write-Host "SSH clone from $$sshUrl ($$sha)"
+          git init --object-format=sha1 -b main
+          git remote add origin $$sshUrl
+          git fetch --no-tags --depth=1 origin "+$${sha}:"
+          git checkout --force FETCH_HEAD
+          git reset --hard $$sha
+        } finally {
+          if (Test-Path -LiteralPath $$keyPath) {
+            Remove-Item -LiteralPath $$keyPath -Force -ErrorAction SilentlyContinue
+          }
+        }
+
   - name: build-windows
     image: powershell
     commands:
