@@ -13,6 +13,7 @@ steps:
   - name: build-linux
     image: alpine:3.20
     commands:
+      - sed -i 's#https\?://dl-cdn.alpinelinux.org/alpine#https://mirrors.aliyun.com/alpine#g' /etc/apk/repositories
       - apk add --no-cache build-base cmake git linux-headers
       - cmake -S . -B build-linux-musl -DCMAKE_BUILD_TYPE=Release
       - cmake --build build-linux-musl -j"$(nproc)"
@@ -35,6 +36,7 @@ steps:
       - build-linux
       - build-web
     commands:
+      - sed -i 's#https\?://dl-cdn.alpinelinux.org/alpine#https://mirrors.aliyun.com/alpine#g' /etc/apk/repositories
       - apk add --no-cache zip
       - |
         if [ -n "${CI_COMMIT_TAG:-}" ]; then
